@@ -561,9 +561,11 @@ fn send(env: Env, args: &[Value]) -> Result<Value> {
     let sent = handle(env, args[0]).map(|s| s.send(&bytes));
     // Zero unconditionally rather than only for secrets: at keystroke sizes it costs
     // nothing, and it means the password path needs no special case to be covered.
-    // `write_volatile` because an ordinary write to a buffer about to be freed is
-    // exactly the store a compiler is entitled to drop.
+    // Whatever the tty would not take at once is queued inside the session, which
+    // wipes its own copy as it drains.
     for b in &mut bytes {
+        // `write_volatile` because an ordinary write to a buffer about to be freed is
+        // exactly the store a compiler is entitled to drop.
         unsafe { std::ptr::write_volatile(b, 0) };
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);

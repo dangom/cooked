@@ -51,3 +51,18 @@ pub(crate) fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     }
     Ok((read, write))
 }
+
+/// Stop writes to `fd` raising SIGPIPE at all; a closed read end is then just `EPIPE`.
+///
+/// Blocking the signal on the writing thread, which is what Linux needs and gets, is
+/// not enough here: XNU posts a write's SIGPIPE to the *process*, so with the reader
+/// thread's mask in the way it is simply delivered to another thread -- Emacs' main
+/// one, asleep in `select`. Interactive Emacs ignores SIGPIPE; `emacs --batch` does
+/// not, and died of it.
+pub(crate) fn no_sigpipe(fd: std::os::fd::BorrowedFd<'_>) {
+    use std::os::fd::AsRawFd;
+    // `<sys/fcntl.h>`; the libc crate does not carry it.
+    const F_SETNOSIGPIPE: libc::c_int = 73;
+    // SAFETY: a plain flag-setting fcntl on a descriptor the caller holds open.
+    unsafe { libc::fcntl(fd.as_raw_fd(), F_SETNOSIGPIPE, 1) };
+}

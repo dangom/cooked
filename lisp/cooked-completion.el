@@ -114,8 +114,57 @@ only that a word is a word."
   (when-let* (((cooked--input-state-p))
               (region (cooked--input-region))
               ((>= (point) (car region))))
-    (or (cooked--run-seam-until-success 'cooked-shell-completion-functions region)
-        (cooked--native-completion))))
+    (when-let* ((capf (or (cooked--run-seam-until-success
+                           'cooked-shell-completion-functions region)
+                          (cooked--native-completion))))
+      ;; Whatever answered, what it offers is a name and what the line needs is
+      ;; a word.  See `cooked--completion-quote'.
+      (if (plist-member (nthcdr 3 capf) :exit-function)
+          capf
+        (append capf (list :exit-function #'cooked--completion-quote-inserted))))))
+
+(defconst cooked--completion-unsafe-chars " \t!\"#$&'()*;<>?[\\]^`{|}"
+  "Characters a shell reads as syntax, which a completed name must not be.")
+
+(defun cooked--completion-quote (name)
+  "NAME as a shell reads it back: each character of syntax escaped.
+
+A candidate is a file name, a branch, a host -- text that exists somewhere --
+and the shells hand them over as they are spelled there.  Inserted like that, a
+name with a space in it is two arguments, and one called `a$(reboot).txt' is a
+command: completing a file name in a directory somebody else filled and then
+pressing RET ran it.  comint quotes what it completes; this did not.
+
+A backslash that is already there is left as it is and so is what follows it,
+so a word the user had begun to quote by hand is not quoted a second time."
+  (let ((out nil) (i 0) (n (length name)))
+    (while (< i n)
+      (let ((char (aref name i)))
+        (cond
+         ((and (eq char ?\\) (< (1+ i) n))
+          (push char out)
+          (push (aref name (setq i (1+ i))) out))
+         ((seq-contains-p cooked--completion-unsafe-chars char)
+          (push ?\\ out)
+          (push char out))
+         (t (push char out))))
+      (setq i (1+ i)))
+    (apply #'string (nreverse out))))
+
+(defun cooked--completion-quote-inserted (string status)
+  "Quote the candidate STRING that completion has just inserted before point.
+
+A completion `:exit-function', so STATUS is what kind of ending this was.  Only
+a finished one is acted on: while the user is still narrowing, what is in the
+buffer is a prefix they are typing rather than a name that was chosen."
+  (when (memq status '(finished sole exact))
+    (let ((quoted (cooked--completion-quote string))
+          (start (- (point) (length string))))
+      (when (and (not (equal quoted string))
+                 (>= start (point-min))
+                 (equal (buffer-substring-no-properties start (point)) string))
+        (delete-region start (point))
+        (insert quoted)))))
 
 (provide 'cooked-completion)
 ;;; cooked-completion.el ends here

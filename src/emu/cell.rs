@@ -598,6 +598,9 @@ pub struct Row {
     pub wrapped: bool,
 }
 
+/// The most combining text one cell carries, in bytes of UTF-8.
+const MAX_MARK_BYTES: usize = 128;
+
 impl Row {
     pub fn new(cols: usize) -> Self {
         Self {
@@ -896,6 +899,8 @@ impl Row {
     }
 
     /// Attach a zero-width character (combining mark, variation selector) to `col`.
+    ///
+    /// Up to [`MAX_MARK_BYTES`] of them; the rest are dropped.
     pub fn combine(&mut self, col: usize, mark: char) {
         if let Some(extras) = &mut self.extras
             && let Some((_, Extra::Marks(text))) = extras
@@ -903,9 +908,15 @@ impl Row {
                 .iter_mut()
                 .find(|(at, extra)| usize::from(*at) == col && matches!(extra, Extra::Marks(_)))
         {
-            let mut s = String::from(&**text);
-            s.push(mark);
-            *text = s.into_boxed_str();
+            // A cluster has an end. Zalgo text stacks a dozen or two marks; nothing
+            // stacks hundreds, except a stream of them written to make this append
+            // quadratic -- each one copies the string -- and then to ship megabytes of
+            // one cell to Emacs on every repaint.
+            if text.len() < MAX_MARK_BYTES {
+                let mut s = String::from(&**text);
+                s.push(mark);
+                *text = s.into_boxed_str();
+            }
             return;
         }
         self.attach(col, Extra::Marks(String::from(mark).into_boxed_str()));

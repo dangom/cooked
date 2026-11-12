@@ -194,8 +194,8 @@ question this test is named for."
     (should (cooked-tests--settle #'cooked--input-start-position))
     (cooked--handle-semantic '(command-start nil (screen 0 . 0)) nil)
     (should (eq cooked--semantic 'output))
-    (cooked--osc-emacs '("CH;2;abcd;1"))
-    (should (equal cooked--completion-nonce "abcd"))
+    (cooked--osc-emacs '("CH;2;4321;1"))
+    (should (equal cooked--completion-nonce "4321"))
     ;; Ownership has *not* changed, which is the case this covers.
     (should (cooked--input-state-p))
     (let (sent)
@@ -203,6 +203,40 @@ question this test is named for."
                  (lambda (&rest _) (setq sent t))))
         (should-not (cooked--shell-completions "git chec" 8))
         (should-not sent)))))
+
+(ert-deftest cooked-a-completed-name-is-quoted-for-the-shell ()
+  "A candidate is a name that exists somewhere, spelled as it is spelled there.
+Put on a command line unquoted, one with a space is two arguments and one with
+`$(...)' in it is a command -- so completing a file in a directory somebody else
+filled, and pressing RET, ran it."
+  (should (equal (cooked--completion-quote "plain-name.txt") "plain-name.txt"))
+  (should (equal (cooked--completion-quote "has space") "has\\ space"))
+  (should (equal (cooked--completion-quote "a$(reboot).txt") "a\\$\\(reboot\\).txt"))
+  (should (equal (cooked--completion-quote "x; rm -rf ~") "x\\;\\ rm\\ -rf\\ ~"))
+  ;; What the user already quoted by hand is not quoted again, and the things
+  ;; that are not syntax are left alone.
+  (should (equal (cooked--completion-quote "already\\ quoted") "already\\ quoted"))
+  (should (equal (cooked--completion-quote "--color=auto") "--color=auto"))
+  (should (equal (cooked--completion-quote "~/dir/user@host:path") "~/dir/user@host:path"))
+  (with-temp-buffer
+    (insert "cat my file")
+    ;; Still narrowing: what is in the buffer is a prefix being typed.
+    (cooked--completion-quote-inserted "my file" 'unknown)
+    (should (equal (buffer-string) "cat my file"))
+    (cooked--completion-quote-inserted "my file" 'finished)
+    (should (equal (buffer-string) "cat my\\ file"))))
+
+(ert-deftest cooked-completion-quotes-whichever-layer-answered ()
+  "The quoting rides on the entry point, so the Emacs table and the shell's own
+candidates both get it without either having to remember."
+  (cooked-tests--with-session '("/bin/cat")
+    (should (cooked-tests--settle #'cooked--input-start-position))
+    (goto-char cooked--input-end)
+    (insert "cat /tm")
+    (let ((capf (cooked-completion-at-point)))
+      (should capf)
+      (should (eq (plist-get (nthcdr 3 capf) :exit-function)
+                  #'cooked--completion-quote-inserted)))))
 
 (ert-deftest cooked-completion-comes-from-zsh-itself ()
   "The whole exchange against a real shell: zsh's own completion system, run in
@@ -251,7 +285,9 @@ the shell you are typing at, over a line it has never seen."
         (insert "ls ")
         (pcase-let ((`(,_start ,_end ,table . ,_) (cooked-completion-at-point)))
           (should (member "README.org" (all-completions "" table)))
-          (should (equal (all-completions "--colo" table) '("--color"))))))))
+          ;; `-l' rather than `--color': the long options are GNU's, and compsys
+          ;; knows a BSD `ls' -- which is the one macOS has -- does not take them.
+          (should (member "-l" (all-completions "-" table))))))))
 
 (ert-deftest cooked-completion-mid-line-replaces-the-word-under-the-cursor ()
   "The span is anchored at the cursor the request was *sent* from.
@@ -299,7 +335,7 @@ parser, one protocol, and a shell that announces for itself.
 The spec here is registered by the test rather than borrowed from
 bash-completion, which is not installed everywhere and would make this a test of
 somebody else\='s package."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (skip-unless (executable-find "base64"))
   (let ((buffer (generate-new-buffer "*cooked-bash-complete*"))
         (home (make-temp-file "cooked-bash-home-" t)))
@@ -322,7 +358,7 @@ somebody else\='s package."
                        (seq-remove (lambda (entry) (string-prefix-p "HOME=" entry))
                                    process-environment))))
             (pcase-let ((`(,argv ,env ,scratch)
-                         (cooked--shell-invocation (executable-find "bash"))))
+                         (cooked--shell-invocation (cooked-tests--bash))))
               (setq cooked--scratch scratch)
               ;; An explicit directory: HOME is redirected for this shell, and a
               ;; `default-directory' that abbreviates to ~ would resolve against the

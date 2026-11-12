@@ -11,7 +11,7 @@ use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{SigSet, Signal};
 use std::ffi::OsStr;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -151,7 +151,11 @@ const RESAMPLE_DELAY: std::time::Duration = std::time::Duration::from_millis(50)
 const REAP_PATIENCE: std::time::Duration = std::time::Duration::from_millis(500);
 /// How long an explicit shutdown gives the child to honour SIGHUP before SIGKILL,
 /// and again to become reapable afterwards.
-const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(50);
+///
+/// Only a child that is slow to leave pays it -- the wait ends the moment it is
+/// reapable -- so this is how long a shell gets to write its history, not a cost on
+/// every kill. Fifty milliseconds was not long enough for that.
+const KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// How quiet the pty must go before a frame is drawn; see [`NotifyState::hold`].
 ///
@@ -370,7 +374,7 @@ impl Notifier {
             return true;
         }
         match &*self.wake.held() {
-            Some(wake) => nix::unistd::write(wake.as_fd(), b"\x01").is_ok(),
+            Some(wake) => write_without_sigpipe(wake.as_fd(), b"\x01").is_ok(),
             None => false,
         }
     }
@@ -615,6 +619,68 @@ struct Shared {
     interacted_until: Mutex<Option<std::time::Instant>>,
     interrupt: Interrupt,
     exited: Mutex<Option<i32>>,
+    /// Input the tty would not take yet; see [`Outbound`].
+    outbound: Mutex<Outbound>,
+}
+
+/// The most input that may wait on a child that is not reading. A paste larger than a
+/// megabyte is unusual and one larger than this is a mistake; past it `send` refuses
+/// rather than growing without bound behind a child that may never read again.
+const OUTBOUND_LIMIT: usize = 64 * 1024 * 1024;
+
+/// Bytes Emacs has sent that the kernel has not yet accepted.
+///
+/// A tty's input queue is small -- about a kilobyte on macOS, four on Linux -- and a
+/// child that is busy, stopped, or itself blocked writing output we have not drained
+/// does not empty it. Emacs has one thread and it must not wait on that, so `send`
+/// writes what the tty will take and leaves the rest here for the reader thread, which
+/// already polls the master and simply asks about `POLLOUT` as well while this is
+/// non-empty. Order is kept by `send` never writing around a queue that has anything in
+/// it.
+///
+/// The bytes are wiped as they leave, for the same reason `cooked--send` wipes its own
+/// copy: one of them may be a password.
+#[derive(Default)]
+struct Outbound {
+    bytes: Vec<u8>,
+    /// How much of `bytes` has already been written.
+    sent: usize,
+}
+
+impl Outbound {
+    fn pending(&self) -> &[u8] {
+        &self.bytes[self.sent..]
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sent == self.bytes.len()
+    }
+
+    /// Record that the first `n` pending bytes reached the kernel.
+    fn advance(&mut self, n: usize) {
+        wipe(&mut self.bytes[self.sent..self.sent + n]);
+        self.sent += n;
+        if self.is_empty() {
+            self.bytes.clear();
+            self.sent = 0;
+        }
+    }
+}
+
+impl Drop for Outbound {
+    fn drop(&mut self) {
+        wipe(&mut self.bytes);
+    }
+}
+
+/// Zero `bytes` in a way the compiler may not elide.
+fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // `write_volatile` because a store to memory about to be freed or overwritten
+        // is exactly the store an optimiser is entitled to drop.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(Ordering::SeqCst);
 }
 
 /// A self-pipe the reader polls alongside the pty, so the two things that can happen
@@ -637,6 +703,7 @@ impl Interrupt {
         // to the trouble of closing. O_NONBLOCK so a raise can never park its caller behind
         // a full pipe, and so `clear` cannot block on a byte another raise got to first.
         let (read, write) = crate::platform::cloexec_pipe()?;
+        crate::platform::no_sigpipe(write.as_fd());
         Ok(Self { read, write })
     }
 
@@ -711,6 +778,12 @@ impl Default for Options {
 pub(crate) struct Session {
     shared: Arc<Shared>,
     reader: Mutex<Option<JoinHandle<()>>>,
+    /// Whether [`Session::shutdown`] has run. Its own flag rather than a reading of
+    /// `Shared::shutdown`, which the reader also sets -- when a wake write fails -- to
+    /// stop *itself*. Sharing one flag meant a reader that had given up made the real
+    /// teardown return early: no signal, no join, no reap, and a child left running
+    /// until the garbage collector happened to finalise the handle.
+    torn_down: AtomicBool,
 }
 
 impl Session {
@@ -733,6 +806,8 @@ impl Session {
             nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
         )?;
 
+        crate::platform::no_sigpipe(wake.as_fd());
+
         let pty = Pty::spawn(argv, env, size, cwd)?;
         let mode = pty.mode().unwrap_or_default();
         let shared = Arc::new(Shared {
@@ -748,18 +823,37 @@ impl Session {
             interacted_until: Mutex::new(None),
             interrupt: Interrupt::new()?,
             exited: Mutex::new(None),
+            outbound: Mutex::new(Outbound::default()),
         });
 
         let reader = std::thread::Builder::new()
             .name("cooked-reader".into())
             .spawn({
                 let shared = Arc::clone(&shared);
-                move || shared.read_loop()
+                move || {
+                    // The emulator parses whatever the child prints, and a panic in
+                    // it used to end this thread without a word: no more output, no
+                    // exit ever reported, and a buffer that looked alive and was
+                    // not. Nothing can be salvaged from a parser in an unknown
+                    // state, so the session is ended properly instead -- hung up,
+                    // reaped, and reported with the status a shell gives a program
+                    // that died of an internal error.
+                    let run = std::panic::AssertUnwindSafe(|| shared.read_loop());
+                    if std::panic::catch_unwind(run).is_err() {
+                        shared.pty.hangup();
+                        let status = shared.pty.reap(REAP_PATIENCE).unwrap_or_else(|| {
+                            shared.pty.kill();
+                            shared.pty.reap(REAP_PATIENCE).unwrap_or(70)
+                        });
+                        shared.report_exit(status);
+                    }
+                }
             })?;
 
         Ok(Self {
             shared,
             reader: Mutex::new(Some(reader)),
+            torn_down: AtomicBool::new(false),
         })
     }
 
@@ -771,10 +865,11 @@ impl Session {
     /// that ignores SIGHUP — `nohup`, `trap '' HUP`, a detached session leader — otherwise
     /// survives an explicit kill and is never reaped.
     pub(crate) fn shutdown(&self) -> bool {
-        if self.shared.shutdown.swap(true, Ordering::SeqCst) {
+        if self.torn_down.swap(true, Ordering::SeqCst) {
             return false;
         }
-        let _ = self.shared.pty.signal(Signal::SIGHUP);
+        self.shared.shutdown.store(true, Ordering::SeqCst);
+        self.shared.pty.hangup();
         self.shared.interrupt.raise();
         self.shared.notifier.close();
         if let Some(reader) = self.reader.held().take() {
@@ -786,7 +881,7 @@ impl Session {
         let mut exited = self.shared.exited.held();
         if exited.is_none() {
             *exited = self.shared.pty.reap(KILL_GRACE).or_else(|| {
-                let _ = self.shared.pty.signal(Signal::SIGKILL);
+                self.shared.pty.kill();
                 self.shared.pty.reap(KILL_GRACE)
             });
         }
@@ -831,9 +926,30 @@ impl Session {
 
     /// Write BYTES to the child, and count that as the user interacting with this
     /// session; see [`Shared::interacted`].
+    ///
+    /// Never blocks. Whatever the tty will not take at once is queued for the reader
+    /// thread to finish; see [`Outbound`].
     pub(crate) fn send(&self, bytes: &[u8]) -> Result<()> {
         self.shared.interacted();
-        self.shared.pty.write(bytes)
+        let mut outbound = self.shared.outbound.held();
+        // Straight to the tty only when nothing is waiting, or this would overtake it.
+        let written = if outbound.is_empty() {
+            self.shared.pty.write_some(bytes)?
+        } else {
+            0
+        };
+        let rest = &bytes[written..];
+        if rest.is_empty() {
+            return Ok(());
+        }
+        if outbound.pending().len() + rest.len() > OUTBOUND_LIMIT {
+            return Err(crate::error::Error::WriteBacklog);
+        }
+        outbound.bytes.extend_from_slice(rest);
+        drop(outbound);
+        // The reader is asleep in a poll that is not asking about `POLLOUT`.
+        self.shared.interrupt.raise();
+        Ok(())
     }
 
     /// Forget that any of the top row's line is already in Emacs.
@@ -1219,8 +1335,12 @@ impl Shared {
         let mut buf = vec![0u8; READ_CHUNK];
 
         while !self.shutdown.load(Ordering::SeqCst) {
+            let mut wanted = PollFlags::POLLIN;
+            if !self.outbound.held().is_empty() {
+                wanted |= PollFlags::POLLOUT;
+            }
             let mut fds = [
-                PollFd::new(self.pty.as_fd(), PollFlags::POLLIN),
+                PollFd::new(self.pty.as_fd(), wanted),
                 PollFd::new(self.interrupt.read.as_fd(), PollFlags::POLLIN),
             ];
             match poll(&mut fds, self.poll_timeout()) {
@@ -1229,7 +1349,20 @@ impl Shared {
                 Ok(_) => {}
             }
             let interrupted = fds[1].revents().is_some_and(|r| !r.is_empty());
-            let ready = fds[0].revents().is_some_and(|r| !r.is_empty());
+            let events = fds[0].revents().unwrap_or(PollFlags::empty());
+            // Anything but writability: input, or the hangup and error bits a closed
+            // slave is reported with, which only a read can turn into an answer.
+            let ready = !(events - PollFlags::POLLOUT).is_empty();
+            // Before the backpressure test below, and that order is the point: a child
+            // blocked writing output we are declining to read is still owed its input,
+            // and one that is echoing a paste needs it to get anywhere at all.
+            if events.contains(PollFlags::POLLOUT) && self.flush_outbound().is_err() {
+                // The tty is gone as far as writing goes. Drop what was queued rather
+                // than spinning on it; the read below reports the ending.
+                let mut outbound = self.outbound.held();
+                let pending = outbound.pending().len();
+                outbound.advance(pending);
+            }
             // Either teardown asked us to stop -- in which case do not touch the pty on the
             // way out -- or a drain left a throttled notification for the `flush` below,
             // and all that was wanted was this iteration itself.
@@ -1263,6 +1396,16 @@ impl Shared {
             self.flush();
 
             if !ready {
+                // Nothing to read, which is the only time this is worth asking. A
+                // pty reports its end when the *last* holder of the slave lets go,
+                // and that need not be the child: a shell that started something in
+                // the background and exited leaves the slave open in that process,
+                // so the end never came -- the shell sat unreaped, and the buffer
+                // went on saying it was live. The child being gone is the session
+                // being over, whoever still has the tty.
+                if let Ok(Some(status)) = self.pty.try_wait() {
+                    return self.report_exit(status);
+                }
                 continue;
             }
 
@@ -1280,8 +1423,9 @@ impl Shared {
             }
 
             match self.pty.read(&mut buf) {
-                Ok([]) => return self.finish(Ended::ChildGone),
-                Ok(data) => {
+                Ok(None) => {}
+                Ok(Some([])) => return self.finish(Ended::ChildGone),
+                Ok(Some(data)) => {
                     let drawable = self.term.held().feed(data);
                     self.refresh_sync();
                     // Not `announce`: the wakeup is now the business of the `flush` at the
@@ -1316,6 +1460,14 @@ impl Shared {
         self.finish(Ended::Aborted);
     }
 
+    /// Hand the tty as much queued input as it will take.
+    fn flush_outbound(&self) -> Result<()> {
+        let mut outbound = self.outbound.held();
+        let written = self.pty.write_some(outbound.pending())?;
+        outbound.advance(written);
+        Ok(())
+    }
+
     fn finish(&self, why: Ended) {
         let patience = match why {
             Ended::ChildGone => REAP_PATIENCE,
@@ -1324,6 +1476,11 @@ impl Shared {
         let Some(status) = self.pty.reap(patience) else {
             return;
         };
+        self.report_exit(status);
+    }
+
+    /// Record that the child ended with `status` and tell Emacs, at once.
+    fn report_exit(&self, status: i32) {
         *self.exited.held() = Some(status);
         // Acknowledging on the child's behalf, because a wakeup still in flight would
         // otherwise swallow the one below -- and the one below is the last word this
@@ -1379,6 +1536,44 @@ enum Ended {
 /// A write to the wake pipe races Emacs closing its read end. SIGPIPE is delivered to the
 /// writing thread, so blocking it here turns that race into a harmless `EPIPE` instead of
 /// killing Emacs.
+fn write_without_sigpipe(fd: BorrowedFd<'_>, buf: &[u8]) -> nix::Result<usize> {
+    // The reader thread blocks SIGPIPE for its whole life, but it is not the only
+    // writer: `Notifier::rearm` flushes a held notification from `cooked--ready`, which
+    // is Emacs' own thread, and Emacs has closed the read end by then whenever the
+    // session is on its way out. Interactive Emacs ignores SIGPIPE and never noticed.
+    // `emacs --batch` deliberately does not -- so that `emacs --batch | head` ends --
+    // and there the default action killed the whole process: the test suite died at
+    // whichever test first lost that race, with no message and status 141.
+    //
+    // So the signal is blocked for the length of the write and, if the write raised
+    // it, taken back off the thread before the mask is restored. A SIGPIPE that was
+    // already pending is somebody else's and is left alone.
+    let mut pipe = SigSet::empty();
+    pipe.add(Signal::SIGPIPE);
+    let Ok(old) = pipe.thread_swap_mask(nix::sys::signal::SigmaskHow::SIG_BLOCK) else {
+        return nix::unistd::write(fd, buf);
+    };
+    let already_blocked = old.contains(Signal::SIGPIPE);
+    let pending = |sig: Signal| {
+        let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+        // SAFETY: `sigpending` initialises the set it is given, and it is only read
+        // back through `sigismember` once it has reported success.
+        unsafe {
+            libc::sigpending(set.as_mut_ptr()) == 0
+                && libc::sigismember(set.as_ptr(), sig as libc::c_int) == 1
+        }
+    };
+    let was_pending = pending(Signal::SIGPIPE);
+    let written = nix::unistd::write(fd, buf);
+    if !already_blocked {
+        if written == Err(Errno::EPIPE) && !was_pending && pending(Signal::SIGPIPE) {
+            let _ = pipe.wait();
+        }
+        let _ = old.thread_set_mask();
+    }
+    written
+}
+
 fn block_sigpipe() {
     let mut set = SigSet::empty();
     set.add(Signal::SIGPIPE);

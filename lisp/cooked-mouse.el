@@ -50,10 +50,21 @@
   "Events carrying a wheel notch rather than a button that can be held.")
 
 (defconst cooked--button-events
-  '(down-mouse-1 mouse-1 drag-mouse-1
-    down-mouse-2 mouse-2 drag-mouse-2
-    down-mouse-3 mouse-3 drag-mouse-3)
-  "Events for a button that can be pressed, dragged and released.")
+  (let (events)
+    (dolist (button '(1 2 3))
+      (dolist (count '("" "double-" "triple-"))
+        (dolist (kind '("down-mouse" "mouse" "drag-mouse"))
+          (push (intern (format "%s%s-%d" count kind button)) events))))
+    (nreverse events))
+  "Events for a button that can be pressed, dragged and released.
+
+The double and triple spellings are the same button and have to be here in
+their own right.  Emacs renames the second press of a quick pair
+`double-down-mouse-1' and its release `double-mouse-1', and an event with no
+binding of its own is not looked up again under the plain name: the release went
+to Emacs' global `mouse-set-point' instead.  So the child heard a second press
+and never the release -- a button held down as far as it could tell, with a
+drag in progress that every later motion extended.")
 
 (defconst cooked--mouse-wheel-numbers
   (delete-dups (mapcar (lambda (event) (alist-get event cooked--mouse-buttons))
@@ -293,8 +304,36 @@ last was wrapped, `cooked--screen-start' sits mid-line — and a plain
 `current-column' there counts the characters ahead of the marker, which are
 scrollback and not on the screen at all.  Reporting those to the child puts
 every click on row 0 to the right of where it was made."
-  (when-let* ((pos (posn-point posn)))
-    (cooked--screen-cell pos)))
+  (when-let* ((cell (cooked--mouse-cell-from-text posn)))
+    (if-let* ((window (posn-window posn))
+              ((windowp window))
+              (xy (posn-x-y posn))
+              (width (window-font-width window))
+              ((> width 0)))
+        ;; The column from where the pointer is rather than from what text is
+        ;; under it.  `posn-point' answers with the nearest character, so a
+        ;; click in the blank right-hand part of a row -- most of a tmux pane,
+        ;; most of the time -- was reported at the end of that row's text, and
+        ;; a click on a wide or padded glyph at wherever its character began.
+        ;; The grid is the child's and it is laid out in cells, so the pointer's
+        ;; own pixel is the one honest answer.
+        (cons (car cell)
+              (max 0 (min (1- (max 1 cooked--cols)) (/ (car xy) width))))
+      cell)))
+
+(defun cooked--mouse-cell-from-text (posn)
+  "Screen row and column of the character POSN is nearest to, or nil."
+  (if-let* ((pos (posn-point posn)))
+      (cooked--screen-cell pos)
+    ;; Below the last line of text there is no character to be nearest to, and on
+    ;; the alternate screen that is still the screen: the rows are the window's.
+    (when-let* (((bound-and-true-p cooked--alt))
+                (window (posn-window posn))
+                ((windowp window))
+                (xy (posn-x-y posn))
+                (height (window-default-line-height window))
+                ((> height 0)))
+      (cons (max 0 (min (1- (max 1 cooked--rows)) (/ (cdr xy) height))) 0))))
 
 (defun cooked--mouse-report (button row col pressed)
   "Encode a report for BUTTON at ROW/COL, PRESSED or not.

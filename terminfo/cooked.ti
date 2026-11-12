@@ -144,7 +144,7 @@ cooked-256color|cooked terminal emulator for Emacs,
 	cols#80,
 	it#8,
 	lines#24,
-	pairs#0x10000,
+	pairs#0x7fff,
 	acsc=``aaffggiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz{{||}}~~,
 	bel=^G,
 	blink=\E[5m,
@@ -406,6 +406,22 @@ cooked-256color|cooked terminal emulator for Emacs,
 	kxIN=\E[I,
 	kxOUT=\E[O,
 	Sync=\E[?2026%?%p1%{1}%-%tl%eh%;,
+# What tmux reads to decide what its terminal can do. It learns these from its own
+# table for the terminals it knows by name and from the entry for everything else,
+# and we are everything else: without them it withholds extended keys -- so
+# Shift-Return and Control-semicolon reach the program in a pane as Return and a
+# semicolon -- and falls back to guessing at paste and focus.
+#   Eneks, Dseks      modifyOtherKeys level 2, on and off
+#   Enbp, Dsbp        bracketed paste
+#   Enfcs, Dsfcs      focus reporting
+#   Hls               OSC 8 hyperlinks
+	Eneks=\E[>4;2m,
+	Dseks=\E[>4m,
+	Enbp=\E[?2004h,
+	Dsbp=\E[?2004l,
+	Enfcs=\E[?1004h,
+	Dsfcs=\E[?1004l,
+	Hls=\E]8;%?%p1%l%tid=%p1%s%;;%p2%s\E\\,
 
 cooked|cooked terminal emulator for Emacs,
 	use=cooked-256color,

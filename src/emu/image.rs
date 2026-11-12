@@ -225,6 +225,9 @@ pub(crate) const MAX_TRACKED_IMAGES: usize = 4096;
 /// bookkeeping agrees with what Lisp holds: *an id is tracked here if and only if the
 /// module believes Lisp still has its bytes.*
 ///
+/// The most cells a picture may span on either axis, however it came by its size.
+pub(crate) const MAX_CELL_SPAN: u16 = 4096;
+
 /// That is not something the module can work out for itself, so Lisp says: every path in
 /// cooked-deco.el that drops an image calls `cooked--image-forget', which reaches
 /// [`Self::forget`]. Both halves used to keep their own opinion instead -- 4096 entries
@@ -326,7 +329,15 @@ impl ImageStore {
     /// `None` for an id the store has forgotten.
     pub(crate) fn cells(&self, id: ImageId, metrics: CellMetrics) -> Option<CellSize> {
         let image = self.images.get(&id)?;
-        Some(image.asked.unwrap_or_else(|| metrics.cells_for(image.px)))
+        let cells = image.asked.unwrap_or_else(|| metrics.cells_for(image.px));
+        // Clamped here, at the one place a rectangle comes from, rather than where the
+        // child asked for one: the measured answer is as much the child's to choose --
+        // `s=`/`v=`, or the header of something that need not be a picture at all -- and
+        // it used to go unclamped, at up to 65535 rows a placement.
+        Some(CellSize::new(
+            cells.cols.clamp(1, MAX_CELL_SPAN),
+            cells.rows.clamp(1, MAX_CELL_SPAN),
+        ))
     }
 
     /// Record whether the child named a rectangle for this picture, and which.

@@ -126,6 +126,29 @@
         (should browsed)
         (should-not forwarded)))))
 
+(ert-deftest cooked-an-osc-8-link-opens-only-what-it-may ()
+  "The destination is chosen by whatever printed the link and is not what the
+text says, so the scheme is checked before anything is handed to `browse-url' --
+which would otherwise pass `smb:' or an application's own scheme to the system,
+and a `file:' naming a remote host to TRAMP."
+  (let (browsed visited)
+    (cl-letf (((symbol-function 'browse-url) (lambda (uri &rest _) (push uri browsed)))
+              ((symbol-function 'find-file-other-window)
+               (lambda (name &rest _) (push name visited))))
+      (cooked--open-uri "https://example.com/a")
+      (should (equal browsed '("https://example.com/a")))
+      (dolist (uri '("smb://evil.example/share" "vnc://evil.example"
+                     "man:ls" "javascript:alert(1)" "-a/Applications/X.app"
+                     "file:///ssh:evil.example:/etc/passwd"
+                     "file://evil.example/etc/passwd"
+                     "file:///sudo::/etc/shadow"))
+        (should-error (cooked--open-uri uri) :type 'user-error))
+      (should (equal browsed '("https://example.com/a")))
+      (should-not visited)
+      ;; A local file is visited here rather than handed to the system.
+      (cooked--open-uri "file:///tmp/some%20file")
+      (should (equal visited '("/tmp/some file"))))))
+
 (ert-deftest cooked-a-link-does-not-steal-return-from-the-child ()
   (cooked-tests--with-session
       '("/bin/sh" "-c"

@@ -455,15 +455,20 @@ completion layer at all.  `cooked-shell-completion\=' sets this; see
 (defun cooked--osc-announce (payload)
   "Record the prompt\='s OSC 51;CH announcement from PAYLOAD, minus its leading H.
 
-Inert by construction -- a version number and a nonce -- which is what makes it
-safe to believe with no opt-in in front of it.
+Inert only so long as the nonce is the shape the snippets send, which is digits
+and nothing else -- so that is checked rather than assumed.  The nonce is typed
+back to the child inside a completion request, and anything that can print can
+forge an announcement: a `cat\=' of a file carrying this sequence with
+`$(...)\=' where the number goes would otherwise have had that text written to
+a shell with no widget bound to swallow it, on the next TAB.
 
 Version first, so a newer shell snippet paired with an older Emacs declines
 rather than misreading the protocol.  An unrecognised shape clears the nonce
 instead of leaving the last one standing: a garbled announcement is the shell
 failing to make a claim, and the safe reading of no claim is no license."
   (pcase (split-string payload ";")
-    (`("" "2" ,nonce . ,rest)
+    ((and `("" "2" ,nonce . ,rest)
+          (guard (string-match-p "\\`[0-9]\\{1,20\\}\\'" nonce)))
      (setq cooked--completion-nonce nonce
            ;; Field 3 is the reply capability, absent in snippets that predate
            ;; it -- which could only announce when they could also reply, so
@@ -514,8 +519,15 @@ E asks Emacs to run something; C is the completion channel."
 
 ;;;; OSC 52 — clipboard
 
-(defcustom cooked-clipboard-write t
+(defcustom cooked-clipboard-write nil
   "Whether the child may put text on the kill ring via OSC 52.
+
+Off unless asked for.  Anything that can print to the terminal can send this --
+a file shown with `cat', a log, a host at the far end of an `ssh' -- and what it
+buys them is your next paste: the kill ring is also the system clipboard.  Turn
+it on for the case it exists for, which is copying out of a remote editor or a
+tmux pane; each write is announced in the echo area.
+
 Reads are never answered regardless: replying to a query would hand the
 clipboard's contents to any program that asks for them."
   :type 'boolean
@@ -536,7 +548,10 @@ much of the kill ring a runaway or hostile stream can take over."
           ;; Refuse out loud: a silent drop looks like the copy simply failed.
           (message "cooked: refused a %d-character clipboard write (see `cooked-clipboard-max-size')"
                    (length data))
-        (when-let* ((text (ignore-errors (base64-decode-string data t))))
+        (when-let* ((text ;; The standard alphabet, which is what OSC 52 carries.  This passed
+                    ;; t, asking for base64url, where `+' and `/' are invalid --
+                    ;; so any payload containing either was dropped in silence.
+                    (ignore-errors (base64-decode-string data))))
           (kill-new (decode-coding-string text 'utf-8))
           (message "cooked: copied %d characters" (length text)))))))
 
@@ -571,12 +586,20 @@ changed either way, and a `cooked-buffer-name\=' with %h or %p in it wants to
 know about both kinds of move, not just the ones that touch
 `default-directory\='."
   (when (string-match "\\`file://\\([^/]*\\)\\(/.*\\)\\'" url)
-    (setq cooked--host (url-unhex-string (match-string 1 url)))
-    (unless (cooked--foreign-host-p)
-      (when-let* ((name (cooked--local-name (url-unhex-string (match-string 2 url))))
-                  (dir (file-name-as-directory name)))
-        (when (file-directory-p dir)
-          (setq default-directory dir))))
+    ;; Both halves out before anything else runs: `cooked--foreign-host-p' splits
+    ;; strings, which moves the match data, and the path was being read out of
+    ;; whatever that left behind.  It only showed where the reported host and
+    ;; `system-name' differ by a domain -- "mac" against "mac.local", the
+    ;; ordinary case on macOS -- and there every directory change set
+    ;; `default-directory' to "./".
+    (let ((host (url-unhex-string (match-string 1 url)))
+          (path (url-unhex-string (match-string 2 url))))
+      (setq cooked--host host)
+      (unless (cooked--foreign-host-p)
+        (when-let* ((name (cooked--local-name path))
+                    (dir (file-name-as-directory name)))
+          (when (file-directory-p dir)
+            (setq default-directory dir)))))
     (cooked--update-buffer-name)))
 
 (provide 'cooked-osc)

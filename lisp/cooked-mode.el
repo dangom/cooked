@@ -581,9 +581,9 @@ decide.  Reading that character rather than assuming ^C/^\\/^Z is what makes
 deliberately cleared it -- so as to read the byte itself -- from being
 signalled behind its own back.
 
-SIGNAL is the fallback, for the two cases where writing cannot mean anything:
-ISIG is off, so no byte would be turned into one; or the character is disabled
-\=(`_POSIX_VDISABLE\='), so there is no byte to write.  It names the signal
+SIGNAL is the fallback, for the one case where writing cannot mean anything:
+the character is disabled \=(`_POSIX_VDISABLE\='), so there is no byte to
+write.  It names the signal
 rather than numbering it, because the numbers are not the same everywhere:
 SIGTSTP is 20 on Linux and 18 on the BSDs, where 20 is SIGCHLD.  Written as
 numbers here they were Linux\='s, so on macOS the suspend fallback sent a
@@ -592,7 +592,12 @@ a program that had cleared ISIG.  The core links libc and can see which
 platform it is; this side cannot, so this side spells the name."
   (let* ((jc (cooked--job-control session))
          (char (plist-get jc key)))
-    (if (and (plist-get jc :isig) char)
+    ;; The character whenever there is one, ISIG or no ISIG.  A program that
+    ;; cleared ISIG did it to read the byte itself -- vim, a nested Emacs, tmux
+    ;; passing it on to a pane -- and signalling it instead reached the wrong
+    ;; process with the wrong thing: under tmux the signal went to the client,
+    ;; which ignores it, and nothing at all reached the program in the pane.
+    (if char
         (cooked--send-to-child (string char))
       (cooked--signal session signal))))
 
@@ -1124,7 +1129,8 @@ the trigger for `cooked--rescale-deco\='."
                  (cell (cooked--session-cell-size))
                  (moved (not (equal cooked--last-cell cell)))
                  (resized (not (equal cooked--last-size (cons rows cols)))))
-      (unless (and (not resized) (not moved))
+      (unless (or (and (not resized) (not moved))
+                  (cooked--resize-deferred-p rows cols moved))
         (setq cooked--last-size (cons rows cols)
               cooked--last-cell cell
               cooked--rows rows
@@ -1161,6 +1167,48 @@ the trigger for `cooked--rescale-deco\='."
           ;; repaint for what this just changed.
           (cooked--schedule-repaint)
           (cooked--flush-pending-repaint))))))
+
+(defcustom cooked-defer-resize-in-minibuffer t
+  "Whether a window made shorter by the minibuffer leaves the child's size alone.
+
+The minibuffer growing -- a completion UI opening under \\[execute-extended-command],
+a multi-line prompt -- takes its lines from the window above it, and giving
+them back a moment later is the ordinary end of every such command.  Told about
+both, the child is resized twice: a full-screen program redraws everything for
+a height it will hold for as long as you take to type a command name, and then
+redraws everything again.  That is the whole screen flashing on every \\`M-x'.
+
+With this on, a change in height alone while a minibuffer is active is not
+passed on.  The window simply shows as much of the screen as fits, from the top,
+and the child is told only if the height is still different once the minibuffer
+has gone.  A change in width is always passed on at once: text laid out for
+another width is wrong, not merely cropped."
+  :type 'boolean
+  :group 'cooked)
+
+(defun cooked--resize-deferred-p (rows cols moved)
+  "Whether a move to ROWS by COLS should wait for the minibuffer to close.
+
+MOVED is whether the cell size changed, which is never deferred: that is a zoom
+or a font change, not a window giving up lines.  See
+`cooked-defer-resize-in-minibuffer'."
+  (ignore rows)
+  (and cooked-defer-resize-in-minibuffer
+       (not moved)
+       (eql cols cooked--cols)
+       (> (minibuffer-depth) 0)))
+
+(defun cooked--minibuffer-exited ()
+  "Bring every session's size up to date once the minibuffer has closed.
+
+On `minibuffer-exit-hook', and deferred from it: the hook runs while the
+minibuffer is still up and its window has not yet given its lines back."
+  (run-at-time 0 nil
+               (lambda ()
+                 (when (zerop (minibuffer-depth))
+                   (cooked--dolist-buffers
+                     (when (and cooked--session (get-buffer-window nil t))
+                       (cooked--sync-size)))))))
 
 (defun cooked--session-cell-size ()
   "This buffer's cell size in pixels as (WIDTH . HEIGHT), or (nil . nil).
@@ -1307,6 +1355,8 @@ whatever it showed when the freeze began until something else asked."
 (defun cooked--install-global-hooks ()
   "Install the hooks that cannot be buffer-local."
   (add-hook 'window-size-change-functions #'cooked--frame-size-changed)
+  ;; The other half of `cooked-defer-resize-in-minibuffer'.
+  (add-hook 'minibuffer-exit-hook #'cooked--minibuffer-exited)
   ;; Exiting Emacs kills no buffers, so `kill-buffer-hook' -- where every other
   ;; teardown hangs -- never runs.  See `cooked--kill-emacs'.
   (add-hook 'kill-emacs-hook #'cooked--kill-emacs)
@@ -2091,8 +2141,8 @@ state rather than merely checking that it parses."
      :help "Send text of your own to the child"]
     ["Send Next Key Literally" cooked-send-literal-key :enable (cooked--live-session)
      :help "Send the next key even where Emacs would have bound it"]
-    ["Send M-x to the Child" cooked-meta-x :enable (cooked--live-session)
-     :help "For a child that has its own M-x, rather than reading one here"]
+    ["Run M-x in Emacs" cooked-meta-x :enable (cooked--live-session)
+     :help "Read a command here, where plain M-x would be sent to the child"]
     "--"
     ("Signals"
      ["Interrupt" cooked-interrupt :enable (cooked--live-session)

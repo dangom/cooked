@@ -337,7 +337,10 @@ alone is true a moment before the input region exists."
              (cooked-mode)
              ,@(and setup (list setup))
              (pcase-let ((`(,argv ,,invocation ,scratch)
-                          (cooked--shell-invocation (executable-find ,shell))))
+                          (cooked--shell-invocation
+                           (if (equal ,shell "bash")
+                               (cooked-tests--bash)
+                             (executable-find ,shell)))))
                (setq cooked--scratch scratch)
                (cooked--start argv ,directory (append ,extra ,invocation)))
              (cooked--refresh-keymap)
@@ -650,6 +653,29 @@ the command's output, and CODE is the exit status.  Returns the new record."
                                             :input input-text :prompt prompt)))
         (push command cooked--commands)
         command))))
+
+;; Not `executable-find': on macOS that is /bin/bash, which is 3.2 and which the
+;; snippet deliberately stands down for.  A test of the integration needs a bash the
+;; integration supports, and where there is none the honest outcome is a skip.
+(defvar cooked-tests--bash 'unset
+  "Cached answer from `cooked-tests--bash'.")
+
+(defun cooked-tests--bash ()
+  "A bash new enough for the shell integration (4.4), or nil."
+  (when (eq cooked-tests--bash 'unset)
+    (setq cooked-tests--bash
+          (seq-find
+           (lambda (bash)
+             (and (file-executable-p bash)
+                  (eq 0 (call-process
+                         bash nil nil nil "-c"
+                         "(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) ))"))))
+           (delete-dups
+            (delq nil (cons (executable-find "bash")
+                            (mapcar (lambda (dir) (expand-file-name "bash" dir))
+                                    (append exec-path
+                                            '("/opt/homebrew/bin" "/usr/local/bin")))))))))
+  cooked-tests--bash)
 
 (provide 'cooked-tests-helpers)
 ;;; cooked-tests-helpers.el ends here

@@ -1087,6 +1087,11 @@ impl Screen {
         self.cursor.wrap_pending = false;
     }
 
+    /// Put the tab stops back to every eighth column.
+    pub fn reset_tabs(&mut self) {
+        self.tabs = default_tabs(self.tabs.len());
+    }
+
     pub fn set_tab(&mut self) {
         if let Some(stop) = self.tabs.get_mut(self.cursor.col) {
             *stop = true;

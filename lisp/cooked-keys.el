@@ -304,15 +304,74 @@ every capital into a lowercase letter."
          ;; `param' is computed, or the `literal' entry for `backtab' has a code
          ;; point that no modifier ever reaches.
          (mods (if (eq basic 'backtab) (cons 'shift mods) mods))
+         ;; And the same key by its other name.  The NS and PGTK ports report
+         ;; Shift-Tab as `S-tab', which Emacs only rewrites to `backtab' when
+         ;; nothing binds it -- and the passthrough maps bind it, so that Shift
+         ;; is not lost on the way here.  Left as `tab' it fell back to a bare
+         ;; Tab wherever no protocol was negotiated, and Shift-Tab did what Tab
+         ;; does.
+         (basic (if (and (eq basic 'tab) (memq 'shift mods)) 'backtab basic))
          (param (cooked--modifier-param mods)))
     (if-let* ((entry (assq basic cooked--key-encodings)))
         (cooked--encode-entry entry param mods)
       ;; Not in the table at all: a plain character, or nothing we can spell.
       (when (characterp basic)
-        (let ((char (cond ((memq 'control mods) (logand (upcase basic) #x1f))
-                          ((memq 'shift mods) (upcase basic))
-                          (t basic))))
-          (if (memq 'meta mods) (concat "\e" (string char)) (string char)))))))
+        (cooked--encode-character basic param mods)))))
+
+(defun cooked--legacy-control-code (char)
+  "The C0 byte Control turns CHAR into on a terminal with no protocol, or nil.
+
+Masking five bits is the rule for the letters and for `@[\\]^_', which is where
+it comes from.  Applied to anything else it invents a key: `C-/' masked is
+`C-o', where every terminal sends `C-_' -- undo, in readline and in Emacs -- and
+`C-SPC' has to be NUL, which is what sets the mark in a nested Emacs and starts
+a selection in tmux's copy mode.  The digits are xterm's, and are what a
+keyboard without the punctuation has always used to reach those codes.
+
+nil for a character Control has no spelling for, which then goes as itself."
+  (cond
+   ((or (<= ?a char ?z) (<= ?@ char ?_)) (logand char #x1f))
+   ((memq char '(?\s ?2)) 0)
+   ((eq char ?3) 27)
+   ((eq char ?4) 28)
+   ((eq char ?5) 29)
+   ((eq char ?6) 30)
+   ((memq char '(?/ ?7)) 31)
+   ((memq char '(?? ?8)) 127)))
+
+(defvar cooked--keys-assumed nil
+  "Non-nil while `cooked--keys' is a guess from `cooked-key-protocol-overrides'.
+
+A guess is licence to spell the handful of `literal' keys the way the program
+is known to read them, and no more than that: re-spelling every Control chord
+for a program that never asked is a different size of bet.")
+
+(defun cooked--encode-character (char param mods)
+  "Bytes for the character key CHAR held with MODS; PARAM is their xterm parameter.
+
+Unmodified, or with Shift alone, a character is itself.  Past that it depends on
+what the child negotiated.  With nothing negotiated there is the classical
+spelling and its ambiguities: Control folds onto a C0 byte where one exists,
+Meta is a leading ESC, and `C-i' is Tab because nobody can say otherwise.  A
+child that asked for the kitty protocol or for modifyOtherKeys asked precisely
+so that somebody could, and gets every such chord spelled out -- which is what
+lets tmux, told its terminal has extended keys, pass `C-S-a' or `C-;' through
+to the program in a pane instead of losing the modifier at the first hop."
+  (let* ((control (memq 'control mods))
+         (meta (memq 'meta mods))
+         (shifted (if (memq 'shift mods) (upcase char) char))
+         (negotiated (and (not cooked--keys-assumed) cooked--keys)))
+    (cond
+     ((not (or control meta)) (string shifted))
+     ((eq negotiated 'kitty)
+      ;; The key is named by its unshifted code point and Shift rides in PARAM.
+      (cooked--csi "u" (downcase char) param))
+     ((and control (eq negotiated 'modify-other))
+      (cooked--csi "~" 27 param shifted))
+     (t
+      (let ((bytes (string (or (and control (cooked--legacy-control-code char))
+                               shifted))))
+        (if meta (concat "\e" bytes) bytes))))))
 
 (defun cooked-send-key ()
   "Send the key that invoked this command straight to the child.
@@ -321,7 +380,9 @@ Bound under whatever `cooked--keys' says was actually negotiated, unless
 `cooked-key-protocol-overrides' has a program-wide guess to stand in for a
 negotiation that never happened -- see `cooked--assumed-key-protocol'."
   (interactive)
-  (let ((cooked--keys (or (cooked--assumed-key-protocol) cooked--keys)))
+  (let* ((assumed (cooked--assumed-key-protocol))
+         (cooked--keys (or assumed cooked--keys))
+         (cooked--keys-assumed (and assumed t)))
     (when-let* ((bytes (cooked--encode-event last-command-event)))
       (cooked--snap-to-cursor)
       (cooked--send-to-child bytes))))
@@ -402,8 +463,27 @@ Any end marker inside TEXT is dropped.  One left in would close the bracket
 early and hand whatever followed it to the child as if it had been typed —
 which is how a copied line runs something you never read.  The child is told
 where the paste ends; nothing in the middle gets to say otherwise."
-  (let ((end (cooked--csi "~" 201)))
-    (concat (cooked--csi "~" 200) (string-replace end "" text) end)))
+  (concat (cooked--csi "~" 200)
+          (cooked--paste-text text)
+          (cooked--csi "~" 201)))
+
+(defun cooked--paste-text (text)
+  "TEXT as it may be handed to the child as a paste: no controls, CR for newline.
+
+Every C0 control but tab and the line endings goes, ESC first among them, and
+DEL and the C1 range with it.  Deleting the end marker alone, in one pass, is
+what this used to do, and one pass is not enough: `ESC [ 2 0' then the marker
+then `1 ~' has the marker removed and closes up into a marker, so the bracket
+ended wherever the text said and the rest arrived as typing.  With no ESC left
+there is nothing to assemble one from -- and nothing to assemble any other
+sequence from either, which matters as much where there is no bracket at all.
+
+Newlines go as carriage returns because that is what the Return key transmits:
+a line editor is bound to CR, and so is the far side of tmux."
+  (replace-regexp-in-string
+   "\r?\n" "\r"
+   (replace-regexp-in-string "[\0-\10\13\14\16-\37\177\u0080-\u009f]" "" text t t)
+   t t))
 
 (defun cooked--send-paste (text)
   "Hand TEXT to the child as a paste."
@@ -420,9 +500,7 @@ where the paste ends; nothing in the middle gets to say otherwise."
     (message "Paste cancelled"))
    (t
     (cooked--snap-to-cursor)
-    ;; Newlines go as carriage returns because that is what the Return key
-    ;; transmits, and a line editor bound to CR is what is reading them.
-    (cooked--send-to-child (string-replace "\n" "\r" text)))))
+    (cooked--send-to-child (cooked--paste-text text)))))
 
 (defun cooked-paste ()
   "Paste the most recent kill.
@@ -781,6 +859,62 @@ even if accepted -- see `cooked-raw-exceptions' for why."
       (error "cooked: %S does not name a single unmodified control character" key))
     (aref keys 0)))
 
+(defconst cooked--graphic-control-events
+  (let (events)
+    (dolist (char (number-sequence 32 126))
+      (dolist (mods '((control) (control shift)))
+        (let ((event (event-convert-list (append mods (list char)))))
+          ;; What folded onto a C0 code is already a key in the 0-127 range.
+          (when (and (integerp event) (> event 127))
+            (push event events)))))
+    (delete-dups (nreverse events)))
+  "Control chords a graphical frame reports that no byte in 0-127 spells.
+
+A terminal frame cannot produce these: `C-SPC' arrives there as NUL and `C-/'
+as `C-_', already folded by the terminal Emacs is running in.  A graphical frame
+reports the chord itself -- `C-SPC' is the space with a modifier bit, not code
+0 -- and a map binding only 0-127 never sees it, so it ran Emacs' own command
+in the terminal buffer instead: `set-mark-command', `undo', a digit argument.
+`C-;', `C-,' and `C-S-a' are the same events with no C0 spelling at all, which a
+child that negotiated a key protocol can still be told about.")
+
+(defcustom cooked-keymap-exceptions '("C-x" "M-x" "M-:")
+  "Keys that stay with Emacs whatever the child is doing.
+
+A list of key descriptions as `kbd' reads them.  Each is left out of every map
+that forwards keys to the child -- the alternate screen and a running command
+included, which otherwise keep nothing back but \\`C-c' -- so it reaches
+whatever Emacs has it bound to, exactly as it would in any other buffer.
+
+This is the list for the keys your own configuration lives on: a leader, a
+window-switching chord, \\`M-x'.  It exists because a terminal you spend the day
+in is mostly one full-screen program -- tmux, an editor, an agent -- and \"the
+program may want every key\" is true of the program and false of you.
+`cooked-raw-exceptions' and `cooked-semi-exceptions' still add to it for their
+own states.
+
+A Meta chord can only be kept back on a graphical frame.  On a terminal frame it
+is two bytes, ESC and a letter, and the first has been forwarded before the
+second arrives; see `cooked-raw-exceptions'.  \\`C-c C-q' sends any one key
+through to the child regardless."
+  :type '(repeat string)
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (fboundp 'cooked--rebuild-forwarding-maps)
+           (cooked--rebuild-forwarding-maps)))
+  :group 'cooked)
+
+(defun cooked--release-exceptions (map)
+  "Take every key in `cooked-keymap-exceptions' out of MAP, and return MAP.
+
+Removed rather than bound to nil: nil in a child map still answers, and what is
+wanted is for the lookup to go on past this map to Emacs' own."
+  (dolist (key cooked-keymap-exceptions)
+    ;; A key this map cannot hold at all -- a Meta chord in a map where ESC is a
+    ;; key rather than a prefix -- is one it was never going to forward.
+    (ignore-errors (define-key map (kbd key) nil t)))
+  map)
+
 (defun cooked--build-passthrough-map (exceptions &optional reserve-meta)
   "A keymap that forwards to the child, except EXCEPTIONS and `C-c'.
 EXCEPTIONS is a list of character codes, as from `cooked--exception-code';
@@ -804,11 +938,20 @@ where Meta chords arrive as two forwarded bytes, and is why
 `cooked--build-meta-overlay' exists for the frame where it is not."
   (let ((map (make-sparse-keymap)))
     (define-key map [remap self-insert-command] #'cooked-send-key)
+    ;; A paste by any key that is not one of the bytes forwarded below -- `s-v'
+    ;; on macOS, the Edit menu, `S-<insert>' -- still means paste, and the screen
+    ;; is not a place `yank' can put text: it signalled read-only, or at the end
+    ;; of the buffer inserted where the child would never see it.  `C-y' itself
+    ;; is a forwarded byte and is not touched by this.
+    (dolist (command '(yank clipboard-yank))
+      (define-key map (vector 'remap command) #'cooked-paste))
     (dolist (code (number-sequence 0 127))
       (unless (or (eq code cooked--escape-key)
                   (and reserve-meta (eq code meta-prefix-char))
                   (memq code exceptions))
         (define-key map (vector code) #'cooked-send-key)))
+    (dolist (event cooked--graphic-control-events)
+      (define-key map (vector event) #'cooked-send-key))
     ;; Bind the modified variants explicitly, not for completeness but for
     ;; correctness: when `S-return' has no binding Emacs shift-translates it to
     ;; `return' and runs *that* binding, with `last-command-event' already flattened.
@@ -824,7 +967,7 @@ where Meta chords arrive as two forwarded bytes, and is why
     ;; block below `define-derived-mode'.
     (dolist (event cooked--mouse-events)
       (define-key map (vector event) #'cooked-mouse-event))
-    map))
+    (cooked--release-exceptions map)))
 
 (defvar cooked--meta-overlays nil
   "Alist of (MAP . OVERLAY), the cache behind `cooked--forwarding-map\='.
@@ -862,8 +1005,12 @@ Emacs does not have."
     (dolist (code (number-sequence 0 127))
       (unless (memq code '(?O ?\[))
         (define-key esc (vector code) #'cooked-send-meta-key)))
+    ;; `C-M-SPC' and its like: Meta over a chord that is itself outside 0-127.
+    (dolist (event cooked--graphic-control-events)
+      (define-key esc (vector event) #'cooked-send-meta-key))
     (define-key overlay (vector meta-prefix-char) esc)
     (define-key overlay [escape] #'cooked-send-key)
+    (cooked--release-exceptions overlay)
     (set-keymap-parent overlay map)
     overlay))
 
@@ -1057,6 +1204,31 @@ ESC to reach Emacs, so there is nothing to bind it to.
 \\`C-c C-q' is the way through for any one key this map keeps --
 `cooked-send-literal-key' reads the event itself rather than looking it up
 here.")
+
+(declare-function cooked--refresh-keymap "cooked-mode")
+
+(defun cooked--rebuild-forwarding-maps ()
+  "Rebuild every map that forwards to the child, in place, and re-wear them.
+
+What `cooked-keymap-exceptions' calls when it is set in a running session.  In
+place for the reason `cooked--replace-keymap' gives; the Meta overlays are
+dropped rather than patched, since each was built from the list as it then
+stood, and every live buffer is asked to put its map on again so that none goes
+on wearing an overlay that is no longer in the cache."
+  (cooked--replace-keymap
+   cooked-raw-map
+   (cooked--build-passthrough-map
+    (mapcar #'cooked--exception-code cooked-raw-exceptions)))
+  (cooked--replace-keymap cooked-command-map (cooked--build-passthrough-map nil))
+  (cooked--replace-keymap cooked-alt-map (cooked--build-passthrough-map nil))
+  (cooked--replace-keymap
+   cooked-semi-map
+   (cooked--build-passthrough-map
+    (mapcar #'cooked--exception-code cooked-semi-exceptions) t))
+  (setq cooked--meta-overlays nil)
+  (when (fboundp 'cooked--refresh-keymap)
+    (cooked--dolist-buffers
+      (when cooked--session (cooked--refresh-keymap t)))))
 
 (defvar cooked-peek-map
   (let ((map (make-sparse-keymap)))

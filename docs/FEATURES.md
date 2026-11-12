@@ -187,9 +187,10 @@ so pointing it at a repo somebody else chose executes what that repo says to.
 
 Prefer a wrapper of your own over the bare command when the argument is a path.
 
-OSC 52 puts text on the kill ring, up to `cooked-clipboard-max-size`. Clipboard *reads*
-are never answered — replying to a query would hand your clipboard to whatever asked.
-Set `cooked-clipboard-write` to nil to refuse writes too.
+With `cooked-clipboard-write` set, OSC 52 puts text on the kill ring, up to
+`cooked-clipboard-max-size`. It is off by default: anything that can print to the
+terminal can send it, and what it gets is your next paste. Clipboard *reads* are never
+answered either way — replying to a query would hand your clipboard to whatever asked.
 
 
 ## What the prompt marks are read to mean
@@ -493,6 +494,13 @@ always the same link — which already gives `id=` its whole purpose, grouping s
 share a destination. And an `OSC 8` link is *not* an SGR attribute: `ESC[0m` does not
 close one, only an explicit empty `OSC 8;;` or a terminal reset does, which is what makes
 a link a program colours as it prints it work at all.
+
+Where a link goes is chosen by whatever printed it, and is not what its text says. So
+the destination is checked before it is opened: only the schemes in `cooked-link-schemes`
+— `http`, `https`, `mailto` and `file` by default — are followed, the echo area says
+where it is going, and a `file:` link is visited in Emacs only if it names a file on this
+machine. Everything else is refused out loud rather than handed to `browse-url`, which
+would pass it to whatever the system has registered for that scheme.
 
 Anything else that merely *looks* like a URL is a guess, and the guess is Emacs' own:
 `goto-address-fontify-region` runs over each row as it is rendered and each batch as it

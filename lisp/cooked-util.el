@@ -30,6 +30,12 @@
 ;; core's `io_error' would otherwise itself fail with "Invalid error symbol"
 ;; the first time a pty operation errors.
 (define-error 'cooked-error "cooked: I/O error")
+;; What the native core signals when one of its own functions panicked rather
+;; than failed.  It was signalled without ever being defined, and an undefined
+;; condition has no parent: `condition-case' on `error' did not catch it and
+;; neither did `ignore-errors', including the one around the teardown.
+(define-error 'cooked-panic "cooked: the native core hit an internal error"
+  'cooked-error)
 
 (defvar-local cooked--session nil "Handle returned by `cooked--spawn'.")
 

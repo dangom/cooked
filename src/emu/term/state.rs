@@ -294,6 +294,7 @@ impl State {
 
     pub(super) fn drain(&mut self) -> Delta {
         let damaged = self.screen_mut().drain_damage();
+        self.image_rows_laid = 0;
         self.shed_unplaced_images();
         let images = std::mem::take(&mut self.pending_images);
         let links = std::mem::take(&mut self.pending_links);

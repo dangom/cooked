@@ -212,6 +212,10 @@ impl State {
         let Some(cells) = self.images.cells(id, self.metrics) else {
             return;
         };
+        if self.image_rows_laid >= super::IMAGE_ROW_BUDGET {
+            return;
+        }
+        self.image_rows_laid += u32::from(cells.rows);
         let pen = self.pen.erase();
         let start_col = self.screen().cursor.col;
         for cell_row in 0..cells.rows {

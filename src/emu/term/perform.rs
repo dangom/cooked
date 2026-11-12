@@ -8,6 +8,13 @@ use super::*;
 
 impl Perform for State {
     fn print(&mut self, c: char) {
+        // DEL is not a control to the parser, so it arrives here, and it is not a
+        // character to anyone: a terminal ignores it. It used to fall through to the
+        // width table, read as zero-width, and be folded onto the cell to its left as
+        // a combining mark -- an invisible byte in the buffer text for every one.
+        if c == '\x7f' {
+            return;
+        }
         let c = if self.modes.dec_graphics {
             dec_graphic(c)
         } else {
@@ -177,7 +184,16 @@ impl Perform for State {
             (None, b'c') => {
                 // RIS is a soft reset that also clears the screen. The pen is default by
                 // the time the erase runs, so this is `bce` with nothing to carry.
+                //
+                // And it leaves the alternate screen, which a soft reset does not: this
+                // is what `reset` sends after a full-screen program has died without
+                // cleaning up, and a terminal still on the alternate screen afterwards
+                // is one with no scrollback and every key forwarded -- the state the
+                // user typed `reset` to get out of.
+                self.set_alt(false);
                 self.soft_reset();
+                self.primary.reset_tabs();
+                self.alt.reset_tabs();
                 let evicted = self
                     .screen_mut()
                     .erase_display(Erase::All, Style::default());

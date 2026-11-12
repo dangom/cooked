@@ -30,3 +30,7 @@ pub(crate) fn slave_name(master: &PtyMaster) -> crate::error::Result<CString> {
 pub(crate) fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(nix::unistd::pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)?)
 }
+
+/// Nothing to do: Linux raises a write's SIGPIPE on the writing thread, where
+/// `session::write_without_sigpipe` and the reader's own mask already catch it.
+pub(crate) fn no_sigpipe(_fd: std::os::fd::BorrowedFd<'_>) {}

@@ -1708,6 +1708,36 @@ genuinely printed nothing."
           (should (> (cooked--command-end-position command) (point-min)))
           (should (<= (cooked--command-end-position command) (max screen (point-max)))))))))
 
+(ert-deftest cooked-the-cursor-is-placed-in-cells-not-characters ()
+  "The core reports the cursor's column in cells, and a wide character is two
+cells and one character.  Counting characters put the cursor one cell too far
+right for every wide character before it on the line, and padded the row out
+with spaces to reach the place it had wrongly chosen."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c" "printf '\\346\\227\\245\\346\\234\\254\\350\\252\\236x'; sleep 5") ; 日本語x
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "日本語x" (cooked-tests--text)))))
+    (cooked--apply (cooked--drain cooked--session))
+    ;; Seven cells in: three wide characters and one narrow.
+    (should (equal (cooked-cursor-col cooked--cursor) 7))
+    (let ((cursor (cooked--cursor-position)))
+      (should (eq (char-before cursor) ?x))
+      ;; And nothing was added to the row to make room for a miscount.
+      (should (equal (save-excursion
+                       (goto-char cursor)
+                       (buffer-substring-no-properties (line-beginning-position)
+                                                       (line-end-position)))
+                     "日本語x")))
+    ;; The same walk, asked directly: a cell inside a wide character belongs to
+    ;; that character, and a row that ends early says how far it got.
+    (save-excursion
+      (cooked--goto-screen-row 0)
+      (should (equal (cdr (cooked--forward-cells 4)) 4))
+      (should (eq (char-before) ?本)))
+    (save-excursion
+      (cooked--goto-screen-row 0)
+      (should (equal (cdr (cooked--forward-cells 40)) 7)))))
+
 (provide 'cooked-tests-render)
 ;;; cooked-tests-render.el ends here
 

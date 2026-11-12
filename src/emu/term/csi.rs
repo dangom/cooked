@@ -94,12 +94,39 @@ impl State {
             // the user's setting and not the child's to drive. Visibility is mode 25.
             12 => {}
             1000 | 1002 | 1003 | 1006 => {
-                match mode {
-                    1000 => self.modes.mouse.click = on,
-                    1002 => (self.modes.mouse.click, self.modes.mouse.drag) = (on, on),
-                    1003 => (self.modes.mouse.click, self.modes.mouse.motion) = (on, on),
-                    _ => self.modes.mouse.sgr = on,
-                }
+                // The three tracking modes are one setting with three values, not
+                // three switches: turning any of them on replaces whichever was on,
+                // and turning any of them off turns tracking off. Treated as
+                // independent bits, `?1002h` followed by the `?1000l` a program
+                // sends on its way out left drag reporting on for good.
+                let sgr = self.modes.mouse.sgr;
+                self.modes.mouse = match mode {
+                    1006 => Mouse {
+                        sgr: on,
+                        ..self.modes.mouse
+                    },
+                    _ if !on => Mouse {
+                        sgr,
+                        ..Mouse::default()
+                    },
+                    1000 => Mouse {
+                        click: true,
+                        sgr,
+                        ..Mouse::default()
+                    },
+                    1002 => Mouse {
+                        click: true,
+                        drag: true,
+                        sgr,
+                        ..Mouse::default()
+                    },
+                    _ => Mouse {
+                        click: true,
+                        motion: true,
+                        sgr,
+                        ..Mouse::default()
+                    },
+                };
                 // Emitted inside the arm rather than after the match: out there it would
                 // have to re-test the same four numbers to know one of them was handled.
                 self.events.push(Event::Mouse(self.modes.mouse));
@@ -206,17 +233,37 @@ impl State {
             screen.set_insert_mode(false);
             screen.saved = None;
         }
+        self.saved_pen = [None; 2];
         if had_mouse {
             self.events.push(Event::Mouse(self.modes.mouse));
         }
     }
 
     pub(super) fn save_restore(&mut self, save: bool) {
-        let screen = self.screen_mut();
+        // DECSC saves the rendition and the character set along with the position,
+        // and DECRC puts all three back -- it is how a program draws something
+        // elsewhere in other colours and returns to exactly what it was doing. Only
+        // the position used to be kept, so whatever was drawn in between leaked its
+        // colours into the text that followed the restore.
+        //
+        // The slot is read rather than taken: DECRC may be sent any number of times
+        // against one DECSC, and a second one that did nothing left the cursor
+        // wherever the first detour ended.
+        let which = usize::from(self.on_alt);
         if save {
+            self.saved_pen[which] = Some((self.pen, self.underline, self.modes.dec_graphics));
+            let screen = self.screen_mut();
             screen.saved = Some(screen.cursor);
-        } else if let Some(cursor) = screen.saved.take() {
-            screen.goto(cursor.row, cursor.col);
+        } else {
+            if let Some((pen, underline, graphics)) = self.saved_pen[which] {
+                self.pen = pen;
+                self.underline = underline;
+                self.modes.dec_graphics = graphics;
+            }
+            let screen = self.screen_mut();
+            if let Some(cursor) = screen.saved {
+                screen.goto(cursor.row, cursor.col);
+            }
         }
     }
 

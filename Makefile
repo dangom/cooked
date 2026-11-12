@@ -68,7 +68,9 @@ lisp-test: module
 # terminal that describes what we implement.  Both subdirectory spellings are
 # written: ncurses is built to name them either for the entry's first letter or
 # for its hex code, and which one this `tic' chose says nothing about the ncurses
-# that will read it.  Regenerate whenever terminfo/cooked.ti changes -- though
+# that will read it -- Linux's names them for the letter and macOS's for the hex
+# code, so whichever machine runs this, the other spelling is made by hand below.
+# Regenerate whenever terminfo/cooked.ti changes -- though
 # `cooked--terminfo-usable-p' notices if you forget, and rebuilds locally.
 terminfo:
 	@rm -rf terminfo/db && mkdir -p terminfo/db && \
@@ -77,7 +79,11 @@ terminfo:
 	    for entry in "$$dir"*; do \
 	      name=$$(basename "$$entry"); \
 	      hex=$$(printf '%02x' "'$$name"); \
-	      mkdir -p "terminfo/db/$$hex" && cp "$$entry" "terminfo/db/$$hex/$$name"; \
+	      letter=$$(printf '%.1s' "$$name"); \
+	      for sub in "$$hex" "$$letter"; do \
+	        mkdir -p "terminfo/db/$$sub"; \
+	        [ "$$entry" -ef "terminfo/db/$$sub/$$name" ] || cp "$$entry" "terminfo/db/$$sub/$$name"; \
+	      done; \
 	    done; \
 	  done; \
 	  find terminfo/db -type f | sort | sed 's/^/  /'

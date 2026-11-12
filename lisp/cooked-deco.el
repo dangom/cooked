@@ -1101,11 +1101,18 @@ carries no flag for it -- see `Deco::packed\='."
               (setq pos (1+ pos)))
           (let ((deco (list 'glyph bits (and origin (- pos origin)) row)))
             (put-text-property pos end 'cooked-deco deco)
-            (when-let* ((image (and size (cooked--deco-image deco size window))))
-              (while (< pos end)
-                (put-text-property pos (1+ pos) 'display
-                                   (cooked--deco-display deco image size))
-                (setq pos (1+ pos)))))
+            ;; One image as wide as the run, on one `display' property.  What
+            ;; costs in redisplay is not the bitmap but the property: Emacs
+            ;; resolves each one it meets while laying a line out, at tens of
+            ;; microseconds apiece, whether or not anything on that line is then
+            ;; drawn.  A border row of a hundred cell-wide images was a hundred
+            ;; of those on every redisplay that so much as walked past it, and a
+            ;; screenful of them took over a tenth of a second to lay out where
+            ;; the same screen in plain text takes a few milliseconds.
+            (when-let* ((image (and size (cooked--deco-image deco size window
+                                                             count))))
+              (put-text-property pos end 'display
+                                 (cooked--deco-display deco image size))))
           (setq pos end)))
       (setq i (+ i 4)))))
 
@@ -1184,9 +1191,19 @@ stuck at the previous font size, visibly mismatched once the pin is released."
               ;; value repeated by `eq' across adjacent characters is how Emacs is
               ;; told they are one image, which would collapse a run of glyphs to a
               ;; single one -- see `cooked--deco-display'.
-              (dotimes (i (- next (point)))
-                (when-let* ((display (cooked--deco-display-value deco size window)))
-                  (put-text-property (+ (point) i) (+ (point) i 1) 'display display)))
+              ;;
+              ;; A glyph run is the one exception, and the reverse case: its cells
+              ;; share a record *because* they are drawn as one image the width
+              ;; of the run, so that is how it is rebuilt -- see
+              ;; `cooked--apply-glyph-deco'.  A shade's cells never share one.
+              (if (and (eq (car-safe deco) 'glyph) (> (- next (point)) 1))
+                  (when-let* ((image (cooked--deco-image deco size window
+                                                         (- next (point)))))
+                    (put-text-property (point) next 'display
+                                       (cooked--deco-display deco image size)))
+                (dotimes (i (- next (point)))
+                  (when-let* ((display (cooked--deco-display-value deco size window)))
+                    (put-text-property (+ (point) i) (+ (point) i 1) 'display display))))
               (goto-char next)))
           (setq cooked--deco-cell size))))))
 

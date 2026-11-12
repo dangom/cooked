@@ -224,6 +224,15 @@ already loaded and running is a switch in name only — these are separate files
 Syncs evil's states to who owns the keyboard — see [[*Usage][Usage]] above — and adds the
 =vic=/=vac= text objects and =[[=/=]]= prompt motions.
 
+** What the child may do to Emacs
+
+Out of the box, nothing.  The command channel is closed until you =require= it, the child
+cannot write to the clipboard until ~cooked-clipboard-write~ is set (and can never read
+it), an =OSC 8= hyperlink opens only the schemes in ~cooked-link-schemes~, and a pasted
+string is stripped of control characters before the program sees it.  Each of those is a
+way for text you merely /displayed/ — a log, a file, the far end of an =ssh= — to act on
+your behalf, and each is yours to turn on.
+
 ** cooked-osc-eval
 
 Lets the child ask Emacs to do things: visit a file, open Dired, clear the scrollback.
@@ -320,9 +329,44 @@ records which rows were continuations rather than discarding that.
 xterm's. =M-x cooked-install-terminfo-remote= gets it onto a host you =ssh= into. See
 [[file:docs/TERMINFO.md][docs/TERMINFO.md]].
 
-*Not implemented.* Mouse drag/motion reporting, and vttest-level conformance beyond the
-common paths — vim, htop, tmux and less all work, the long tail is untested. Full list
-in [[file:docs/ROADMAP.md][docs/ROADMAP.md]].
+*Not implemented.* Pointer motion with no button held (mode 1003's other half), and
+vttest-level conformance beyond the common paths — vim, htop, tmux and less all work,
+the long tail is untested. Full list in [[file:docs/ROADMAP.md][docs/ROADMAP.md]].
+
+* tmux, and other programs that are not a shell
+
+=M-x cooked= starts a shell.  For anything else there is ~cooked-exec~, which runs a
+program directly in a buffer of your choosing — no shell underneath it, and no shell
+integration injected, because there is no shell for it to go into:
+
+#+begin_src emacs-lisp
+(cooked-exec (generate-new-buffer "*agent*") "tmux"
+             '("new-session" "-A" "-s" "work"))
+#+end_src
+
+The buffer is yours to display, and ~get-buffer-process~ answers for it for exactly as
+long as the program lives.
+
+tmux needs nothing in =tmux.conf= to get the most out of cooked: the terminfo entry tells
+it about synchronized output, extended keys, bracketed paste, focus events and hyperlinks,
+so a redraw arrives as one frame and =S-RET= or =C-;= reach the program in a pane with
+their modifiers.  A few things are worth knowing when a full-screen program is most of
+what you run:
+
+- *Keys that stay with Emacs.*  On the alternate screen every key goes to the program,
+  which is right about the program and not about you.  ~cooked-keymap-exceptions~ is the
+  list of keys that never do — =C-x=, =M-x= and =M-:= by default; add your leader and
+  whatever you switch windows with.
+- *=C-c C-c= is a byte there, not a signal.*  A program that turned signal keys off did it
+  to read them itself, and tmux passes them on to the pane.
+- *The minibuffer does not resize it.*  A completion UI opening takes lines from the
+  window above and gives them back; cooked waits until it closes rather than making a
+  full-screen program redraw twice.  See ~cooked-defer-resize-in-minibuffer~.
+- *Glyphs from fallback fonts are fitted to the cell.*  A character your default font
+  lacks is drawn from another font at that font's metrics, which makes its row a few
+  pixels taller than the rest — and the rows under it move every time a spinner changes
+  frame.  cooked scales and pads such glyphs so that every row is one height and every
+  column lines up.  See ~cooked-fit-fallback-glyphs~.
 
 * Compile integration
 

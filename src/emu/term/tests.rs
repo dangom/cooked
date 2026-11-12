@@ -68,6 +68,23 @@ fn truecolor_arrives_in_both_spellings() {
 }
 
 #[test]
+fn truecolor_does_not_swallow_the_parameter_after_it() {
+    // What every program that builds one SGR per cell emits: foreground, background
+    // and an attribute in a single sequence.
+    let t = term(2, 20, b"\x1b[38;2;10;20;30;48;2;40;50;60;1mx");
+    let style = t.screen().row(0).unwrap().runs()[0].style;
+    assert_eq!(style.fg, Color::Rgb(10, 20, 30));
+    assert_eq!(style.bg, Color::Rgb(40, 50, 60));
+    assert!(style.attrs.contains(Attrs::BOLD));
+
+    // The colon form without a colour-space id is five sub-parameters, not six.
+    let t = term(2, 20, b"\x1b[38:2:10:20:30;4mx");
+    let style = t.screen().row(0).unwrap().runs()[0].style;
+    assert_eq!(style.fg, Color::Rgb(10, 20, 30));
+    assert!(style.attrs.contains(Attrs::UNDERLINE));
+}
+
+#[test]
 fn decstbm_on_a_zero_height_screen_does_not_underflow() {
     // `CSI r` with no parameters defaults its bottom margin to the screen's own
     // height, unlike every other `arg(...) - 1` call site in this module, which
@@ -1927,6 +1944,66 @@ fn an_anchor_survives_the_row_scrolling_off() {
         "the marked row is in this batch of scrollback, not on the grid"
     );
     assert_eq!(delta.scrolled_base, 0, "nothing scrolled before this drain");
+}
+
+#[test]
+fn leaving_one_tracking_mode_leaves_tracking() {
+    // What a program does on the way out when it turned on drag reporting on the way
+    // in: the three tracking modes are one setting, and `?1000l` ends it.
+    let mut t = term(4, 20, b"\x1b[?1002h\x1b[?1006h\x1b[?1000l");
+    assert!(!t.mouse().enabled());
+    // And turning one on replaces the other rather than adding to it.
+    t.feed(b"\x1b[?1003h\x1b[?1000h");
+    let mouse = t.mouse();
+    assert!(mouse.click && !mouse.drag && !mouse.motion && mouse.sgr);
+}
+
+#[test]
+fn decrc_restores_the_rendition_and_may_be_repeated() {
+    // Red, save, draw something green elsewhere, restore: what follows is red again.
+    let t = term(2, 20, b"\x1b[31m\x1b7\x1b[5C\x1b[32mG\x1b8R");
+    let runs = t.screen().row(0).unwrap().runs();
+    assert_eq!(runs[0].text, "R");
+    assert_eq!(runs[0].style.fg, Color::Indexed(1));
+
+    // One save answers any number of restores.
+    let t = term(2, 20, b"ab\x1b7cd\x1b8X\x1b[10C\x1b8Y");
+    assert_eq!(text(&t, 0), "abYd");
+}
+
+#[test]
+fn del_is_ignored_and_combining_marks_have_an_end() {
+    let t = term(2, 20, b"a\x7f\x7fb");
+    assert_eq!(text(&t, 0), "ab");
+
+    // A megabyte of combining marks on one cell was a megabyte in one cell, copied
+    // again for every mark appended to it.
+    let mut input = b"a".to_vec();
+    for _ in 0..10_000 {
+        input.extend_from_slice("\u{301}".as_bytes());
+    }
+    let t = term(2, 20, &input);
+    assert!(text(&t, 0).len() < 200);
+}
+
+#[test]
+fn a_flood_of_placements_cannot_fill_the_scrollback() {
+    // Thirteen bytes a placement, thousands of rows each: the budget is what stops
+    // one read of these from archiving gigabytes before backpressure is consulted.
+    let mut t = term(24, 80, b"");
+    t.set_cell_metrics(CellMetrics {
+        width: 8,
+        height: 16,
+    });
+    t.feed(b"\x1b_Ga=t,f=100,i=1,q=2,c=9999,r=9999;AAAA\x1b\\");
+    for _ in 0..2000 {
+        t.feed(b"\x1b_Ga=p,i=1,q=2\x1b\\");
+    }
+    assert!(t.backlog() < 20_000, "backlog was {}", t.backlog());
+    // Draining is what refills the budget, so pictures go on working afterwards.
+    let _ = t.drain();
+    t.feed(b"\x1b_Ga=p,i=1,q=2\x1b\\");
+    assert!(t.backlog() > 0);
 }
 
 #[test]

@@ -56,30 +56,71 @@ sidesteps having to know, which matters most for the copy we ship -- it carries
 both spellings, because it was written on somebody else\='s machine."
   (car (file-expand-wildcards (expand-file-name (concat "*/" name) database))))
 
+(defun cooked--terminfo-tool (name)
+  "The terminfo program NAME (`tic\=', `infocmp\=') to run, or nil.
+
+The system's own copy where there is one, ahead of whatever PATH finds first.
+On macOS the two differ in a way that matters: /usr/bin holds ncurses 5.7, which
+is what /bin/zsh, the system vim and less all link, while a Homebrew or conda
+ncurses 6 earlier on PATH writes a database in a format 5.7 cannot read.  The
+oldest reader on the machine is the one a database has to satisfy, and a
+database it wrote is read by every newer one."
+  (let ((system (expand-file-name name "/usr/bin")))
+    (if (file-executable-p system) system (executable-find name))))
+
+(defun cooked--terminfo-readable-p (database name)
+  "Whether this machine's ncurses can actually read NAME out of DATABASE.
+
+A compiled entry existing is not the same as it being usable.  The database we
+ship was compiled by ncurses 6, which writes the extended-number format, and an
+ncurses older than 6.1 -- the one macOS still ships -- answers that with
+\"unknown terminal\" and falls through to databases that have never heard of us.
+So ask the reader itself.  With no `infocmp\=' to ask, take the file's word."
+  (let ((infocmp (cooked--terminfo-tool "infocmp")))
+    (or (null infocmp)
+        (let ((process-environment
+               (cons (concat "TERMINFO=" (expand-file-name database))
+                     process-environment)))
+          (eq 0 (ignore-errors (call-process infocmp nil nil nil name)))))))
+
 (defun cooked--terminfo-usable-p (database name)
-  "Whether DATABASE describes NAME, from a compile no older than the source.
+  "Whether DATABASE describes NAME readably, and no older than the source.
 
 Staleness is the same hazard `cooked--module-stale-p\=' guards, arrived at the
 same way: edit terminfo/cooked.ti, forget to rebuild, and every child is handed
 a description of a terminal this is no longer.  Nothing downstream can catch it
 -- a capability that is merely wrong reads as the child choosing not to use it
--- so it is caught here, where the two files can still be compared."
+-- so it is caught here, where the two files can still be compared.
+
+Readability is `cooked--terminfo-readable-p\='."
   (when-let* ((entry (cooked--terminfo-entry database name))
               (source (cooked--terminfo-source)))
-    (or (not (file-exists-p source))
-        (not (time-less-p (file-attribute-modification-time (file-attributes entry))
-                          (file-attribute-modification-time (file-attributes source)))))))
+    (and (or (not (file-exists-p source))
+             (not (time-less-p (file-attribute-modification-time (file-attributes entry))
+                               (file-attribute-modification-time (file-attributes source)))))
+         (cooked--terminfo-readable-p database name))))
 
 (defun cooked--terminfo-install (&optional database)
   "Compile our entry into DATABASE, returning it, or nil on failure.
 
 DATABASE defaults to ours under `user-emacs-directory\='."
   (let ((source (cooked--terminfo-source))
-        (database (or database (locate-user-emacs-file "cooked/terminfo"))))
-    (and (executable-find "tic")
+        ;; Expanded: this ends up in the child's TERMINFO, and ncurses does not
+        ;; know what `~' means.
+        (database (expand-file-name
+                   (or database (locate-user-emacs-file "cooked/terminfo"))))
+        (tic (cooked--terminfo-tool "tic")))
+    (and tic
          (file-exists-p source)
          (progn (make-directory database t) t)
-         (eq 0 (call-process "tic" nil nil nil "-x" "-o" database source))
+         ;; Only the entry the child will be told about, and whatever it is
+         ;; built from.  The source holds three, and the direct-colour one is
+         ;; too large for the format an ncurses older than 6.1 writes: compiled
+         ;; all together, that `tic' wrote the two it could and then reported
+         ;; failure for the lot.
+         (eq 0 (call-process tic nil nil nil "-x"
+                             "-e" (or cooked-term-name "cooked-256color")
+                             "-o" database source))
          database)))
 
 (defvar cooked--terminfo-database 'unset
@@ -107,7 +148,8 @@ parse being skipped rather than fatal."
   (when (eq cooked--terminfo-database 'unset)
     (setq cooked--terminfo-database
           (let ((shipped (expand-file-name "terminfo/db" (cooked--root)))
-                (mine (locate-user-emacs-file "cooked/terminfo")))
+                (mine (expand-file-name
+                       (locate-user-emacs-file "cooked/terminfo"))))
             (cond
              ((cooked--terminfo-usable-p shipped cooked-term-name) shipped)
              ((cooked--terminfo-usable-p mine cooked-term-name) mine)

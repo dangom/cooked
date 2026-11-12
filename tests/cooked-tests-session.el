@@ -337,7 +337,7 @@ so is lost to anything that rebuilds it."
     (with-temp-buffer
       (let ((process-environment (cons "TERM_PROGRAM=cooked" process-environment)))
         (insert (or input "true\nexit\n"))
-        (call-process-region (point-min) (point-max) (executable-find "bash")
+        (call-process-region (point-min) (point-max) (cooked-tests--bash)
                              t t nil "--rcfile" rc "-i"))
       (goto-char (point-min))
       ;; The options are captured, not skipped past: `A;k=s' -- the continuation
@@ -358,7 +358,7 @@ than about what it printed, which it can only answer by being asked."
   (with-temp-buffer
     (let ((process-environment (cons "TERM_PROGRAM=cooked" process-environment)))
       (insert (or input "true\nexit\n"))
-      (call-process-region (point-min) (point-max) (executable-find "bash")
+      (call-process-region (point-min) (point-max) (cooked-tests--bash)
                            t t nil "--rcfile" rc "-i"))
     (buffer-string)))
 
@@ -381,7 +381,7 @@ than about what it printed, which it can only answer by being asked."
 expands when it draws the prompt -- not as bytes.  The guard against
 re-appending tested for a real ESC, so it never matched, and by the tenth prompt
 PS1 was mostly marks.  Nothing was visibly wrong: an OSC occupies no columns."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc)))
     (unwind-protect
         (let ((marks (cooked-tests--bash-marks rc "true\ntrue\nexit\n")))
@@ -407,7 +407,7 @@ expands exactly once per command line it is about to run, so the question the
 latch answered no longer gets asked.  The test stays because the property is the
 same one either way, and it is the property rather than the mechanism that
 Emacs depends on."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc)))
     (unwind-protect
         (let ((marks (cooked-tests--bash-marks rc "true\nexit\n")))
@@ -426,7 +426,7 @@ The zsh half of this is covered separately; bash gets its own because the way it
 stays first differs -- a string prepended to PROMPT_COMMAND rather than a
 reordered array -- and because a theme appending to PROMPT_COMMAND is the common
 way to break it."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc "__theme() { :; }"
                                    "PROMPT_COMMAND='__theme'")))
     (unwind-protect
@@ -441,7 +441,7 @@ construct falls out of Emacs\=' hands back to readline.
 `A;k=s\=' rather than a bare `A\=': the option is what says this prompt continues
 the previous one, which is what keeps the command record filed under the prompt
 the construct was typed at."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc)))
     (unwind-protect
         (let ((marks (cooked-tests--bash-marks
@@ -461,7 +461,7 @@ line is the whole point of marking it; the `A;k=s\\=' inside that is the marks\\
 half.  Gating both halves on `input-mark\\=' alone emitted a continuation whose
 prompt start was never announced -- a claim about a command Emacs has no record
 of, which then latched a flag on the Emacs side that nothing could clear."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc))
         (script "for x in 1 2; do\necho $x\ndone\nexit\n"))
     (unwind-protect
@@ -494,7 +494,7 @@ which is to say after everything else had run.  `trap ... DEBUG\=' replaces
 whatever was there without a word, so the thing it replaced was, as often as not,
 bash-preexec: every `preexec_functions\=' hook the user had went quiet, and
 nothing anywhere said so.  The mark rides in PS0 now, which displaces nothing."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc "__user_preexec() { :; }"
                                    "trap '__user_preexec' DEBUG")))
     (unwind-protect
@@ -511,7 +511,7 @@ element 0 only, so the user\='s remaining entries survive -- and now run *after*
 everything we appended, which under the old DEBUG trap meant the first of them
 was reported as a command the user had typed and every prompt emitted a stray
 `C\='.  Branch on the actual type, as kitty and Ghostty both do."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc "PROMPT_COMMAND=(\"__first=1\" \"__second=1\")")))
     (unwind-protect
         (let ((output (cooked-tests--bash-output
@@ -535,7 +535,7 @@ command and the only one Emacs has when the shell kept the line.
 
 Percent-encoded rather than kitty\='s `cmdline=\=', which is `printf %q\=' output
 and so is quoted in a way only that shell can undo."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc)))
     (unwind-protect
         (let ((marks (cooked-tests--bash-marks rc "echo 'hi there'\nexit\n")))
@@ -552,7 +552,7 @@ The history number settles it -- what bash said the next command would be
 numbered, taken at the prompt, against what the entry actually carries -- and
 when they disagree the mark goes out bare.  Saying nothing is the only honest
 answer, and it costs nothing: Emacs still has the text it submitted."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc "HISTCONTROL=ignorespace")))
     (unwind-protect
         (let ((marks (cooked-tests--bash-marks
@@ -571,7 +571,7 @@ answer, and it costs nothing: Emacs still has the text it submitted."
 (ert-deftest cooked-bash-survives-a-theme-that-rebuilds-the-prompt ()
   "A theme rebuilding PS1 from PROMPT_COMMAND must not cost the `B\=' mark, which
 is the whole hand-the-keyboard-back feature."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc "__theme() { PS1='theme$ '; }"
                                    "PROMPT_COMMAND='__theme'")))
     (unwind-protect
@@ -745,7 +745,7 @@ and `__cooked_want\=' remains the only thing that answers."
 
 (ert-deftest cooked-bash-honours-the-feature-list ()
   "The same subtraction zsh honours, on the shell that gets less attention."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let ((rc (cooked-tests--bash-rc)))
     (unwind-protect
         (let* ((process-environment
@@ -846,7 +846,7 @@ directory that does not exist, and tracking stops without a word.  The receiving
 half has always decoded; it was the sending half that did not encode, in all
 three shells at once, so all three are checked here against the same directory."
   (skip-unless (executable-find "zsh"))
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (let* ((parent (make-temp-file "cooked-tests-cwd-" t))
          (awkward (expand-file-name "100%20cake" parent))
          (encoded (concat (replace-regexp-in-string
@@ -872,7 +872,7 @@ three shells at once, so all three are checked here against the same directory."
 
 (ert-deftest cooked-real-bash-reaches-input-state-at-its-prompt ()
   "The headline case: a real interactive shell, whose prompt is raw-mode."
-  (skip-unless (executable-find "bash"))
+  (skip-unless (cooked-tests--bash))
   (cooked-tests--with-shell
       ("bash"
        ;; The shell's own line editor puts the tty in raw mode, and yet OSC 133
@@ -1390,6 +1390,74 @@ against a buffer holding half of it."
     (cooked-tests--split-resize 4 13)
     (should (= (cooked-tests--seam-offset) (cooked-grid-head cooked--grid)))
     (cooked--check-seam)))
+
+(ert-deftest cooked-a-write-never-waits-on-a-child-that-is-not-reading ()
+  "A tty takes about a kilobyte of input before it needs somebody to read it,
+and the write that did not fit used to sleep in the kernel with Emacs' only
+thread inside it -- a paste into a busy program was a frozen editor until the
+program got round to reading.  What does not fit is queued and written from the
+reader thread instead, in order, so the send returns at once and nothing is
+lost."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c" "stty raw -echo; sleep 1; head -c 200000 | wc -c; echo fin")
+    (cooked-tests--pump 0.3)
+    (let ((start (float-time)))
+      (cooked--send cooked--session (make-string 200000 ?x))
+      ;; Far inside the second the child spends not reading at all.
+      (should (< (- (float-time) start) 0.5)))
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "200000" (cooked-tests--text))) 15))))
+
+(ert-deftest cooked-a-child-that-leaves-a-job-on-the-tty-is-still-seen-to-exit ()
+  "A pty reports its end when the last holder of the slave lets go, which need
+not be the child: a shell that backgrounds something and exits leaves the slave
+open in that job.  The exit was never reported and the buffer stayed live."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c" "sleep 20 & echo started; exit 7")
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "exited 7" (cooked-tests--text))) 5))))
+
+(ert-deftest cooked-exec-runs-a-program-directly-in-a-buffer-of-the-callers ()
+  "The entry point for something that is not a shell: the caller's buffer, the
+caller's directory, the caller's arguments, and `get-buffer-process' answering
+for exactly as long as the child lives."
+  (let ((buffer (generate-new-buffer "*cooked-exec-test*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer (setq default-directory "/tmp/"))
+          (should (eq (cooked-exec buffer "/bin/sh" '("-c" "pwd; printf '%s|' \"$1\" \"$2\"; cat" "sh" "one two" "three"))
+                      buffer))
+          (with-current-buffer buffer
+            (should (derived-mode-p 'cooked-mode))
+            (should (get-buffer-process buffer))
+            (should (cooked-tests--settle
+                     (lambda () (string-match-p "one two|three|" (cooked-tests--text)))))
+            (should (string-match-p "tmp" (cooked-tests--text)))
+            ;; A second program in a buffer that already has one is a mistake.
+            (should-error (cooked-exec buffer "/bin/cat") :type 'user-error)
+            (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                      ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+              (cooked-kill-session))
+            (should (cooked-tests--settle
+                     (lambda () (not (get-buffer-process buffer)))))))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buffer)))))
+
+(ert-deftest cooked-the-minibuffer-taking-lines-does-not-resize-the-child ()
+  "A completion UI opening takes lines from the window above and gives them
+back when it closes.  Passed on, that is two resizes and two full redraws of a
+full-screen program for every command typed."
+  (cooked-tests--with-session '("/bin/sh" "-c" "sleep 5")
+    (cl-letf (((symbol-function 'minibuffer-depth) (lambda () 1)))
+      ;; Height alone, with a minibuffer up: wait.
+      (should (cooked--resize-deferred-p (1- cooked--rows) cooked--cols nil))
+      ;; A change of width is wrong layout rather than cropped layout.
+      (should-not (cooked--resize-deferred-p cooked--rows (1- cooked--cols) nil))
+      ;; So is a change of cell size.
+      (should-not (cooked--resize-deferred-p (1- cooked--rows) cooked--cols t))
+      (let ((cooked-defer-resize-in-minibuffer nil))
+        (should-not (cooked--resize-deferred-p (1- cooked--rows) cooked--cols nil))))
+    (should-not (cooked--resize-deferred-p (1- cooked--rows) cooked--cols nil))))
 
 (provide 'cooked-tests-session)
 ;;; cooked-tests-session.el ends here

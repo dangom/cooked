@@ -16,7 +16,6 @@
 use crate::error::{Error, Result};
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-use nix::poll::{PollFd, PollFlags, PollTimeout};
 use nix::pty::{PtyMaster, grantpt, posix_openpt, unlockpt};
 use nix::sys::signal::{Signal, killpg};
 use nix::sys::termios::{LocalFlags, SpecialCharacterIndices, Termios, tcgetattr};
@@ -195,19 +194,6 @@ pub(crate) struct Pty {
     reap_lock: std::sync::Mutex<()>,
 }
 
-/// How long [`Pty::write`] waits on a child that is not draining its input before it
-/// gives up and reports an error rather than blocking Emacs' single thread further.
-/// Generous enough that a legitimate large bracketed paste to a briefly slow reader
-/// (a shell about to start echoing) never trips it; short enough that a genuinely
-/// stopped job (`C-z`) turns into a prompt error instead of a frozen editor.
-const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// Cap a remaining-time budget to what [`nix::poll::poll`] accepts, without waiting past
-/// the deadline computed from [`WRITE_TIMEOUT`].
-fn poll_timeout(remaining: std::time::Duration) -> PollTimeout {
-    PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX)
-}
-
 /// The grace period `Drop`'s own `SIGHUP`-then-`SIGKILL` escalation gives at each step.
 /// Same value as `session::KILL_GRACE`, kept as its own constant rather than shared:
 /// this path only runs when something has already gone wrong (teardown outside
@@ -364,51 +350,39 @@ impl Pty {
         })
     }
 
-    /// Write to the child, without blocking Emacs' only thread forever on it.
+    /// Write as much of `buf` as the tty will take right now, and say how much that was.
     ///
-    /// The master is a blocking fd, and `write(2)` on a tty blocks once its input queue
-    /// is full — a stopped job (`C-z`/`SIGSTOP`), a full-screen program not reading, or
-    /// flow control all fill it. This function is called directly on the thread holding
-    /// the `emacs_env` (see `env.rs`'s own rule that such a thread must never block), so
-    /// it polls for writability first and gives up after [`WRITE_TIMEOUT`] rather than
-    /// waiting on the child indefinitely. A short individual poll keeps the common case
-    /// (plenty of room) indistinguishable from the old unconditional write; the bound
-    /// only ever bites when the child truly cannot make progress.
-    pub(crate) fn write(&self, mut buf: &[u8]) -> Result<()> {
-        let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
-        while !buf.is_empty() {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::WriteTimeout);
-            }
-            let mut fds = [PollFd::new(self.master.as_fd(), PollFlags::POLLOUT)];
-            match nix::poll::poll(&mut fds, poll_timeout(remaining)) {
-                Ok(0) => continue, // timed out this round; loop re-checks the deadline
-                Ok(_) => {}
-                Err(Errno::EINTR) => continue,
-                Err(e) => return Err(e.into()),
-            }
-            if !fds[0]
-                .revents()
-                .is_some_and(|r| r.contains(PollFlags::POLLOUT))
-            {
-                continue;
-            }
-            match nix::unistd::write(self.master.as_fd(), buf) {
-                Ok(n) => buf = &buf[n..],
-                Err(Errno::EINTR) | Err(Errno::EAGAIN) => {}
+    /// Never blocks: the master is `O_NONBLOCK` (see [`open_master`]), so a tty whose
+    /// input queue is full -- a stopped job, a build that is not reading stdin, a child
+    /// itself blocked on output we have not drained -- answers `EAGAIN` and this returns
+    /// short. What is left is the caller's to queue; see `session::Outbound`. It used to
+    /// be a blocking fd with a poll in front and a three-second deadline, which bounded
+    /// nothing: the kernel reports a tty writable when it has room for *anything*, and a
+    /// write larger than that room then slept with Emacs' only thread inside it.
+    pub(crate) fn write_some(&self, buf: &[u8]) -> Result<usize> {
+        let mut written = 0;
+        while written < buf.len() {
+            match nix::unistd::write(self.master.as_fd(), &buf[written..]) {
+                Ok(0) => break,
+                Ok(n) => written += n,
+                Err(Errno::EINTR) => {}
+                Err(Errno::EAGAIN) => break,
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(())
+        Ok(written)
     }
 
-    /// Read available output. An empty slice means the child closed the slave end.
-    pub(crate) fn read<'b>(&self, buf: &'b mut [u8]) -> Result<&'b [u8]> {
+    /// Read available output. `Ok(None)` means there was nothing to read after all;
+    /// an empty slice means the child closed the slave end.
+    pub(crate) fn read<'b>(&self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>> {
         loop {
             return match nix::unistd::read(self.master.as_fd(), buf) {
-                Ok(n) => Ok(&buf[..n]),
+                Ok(n) => Ok(Some(&buf[..n])),
                 Err(Errno::EINTR) => continue,
+                // The master is non-blocking and `poll` is allowed to be wrong: a child
+                // that `tcflush`es between the poll and the read leaves nothing here.
+                Err(Errno::EAGAIN) => Ok(None),
                 Err(e) => Err(e.into()),
             };
         }
@@ -434,6 +408,43 @@ impl Pty {
             // `killpg` rather than `kill(-pid)`: the negation was the whole footgun.
             Pid(target) if target > 1 => Ok(killpg(NixPid::from_raw(target), sig)?),
             _ => Err(Error::NoForeground),
+        }
+    }
+
+    /// Hang up on everything this terminal started: the foreground job *and* the child.
+    ///
+    /// [`Pty::signal`] reaches the foreground group alone, which is right for a key and
+    /// wrong for a teardown: with `vim` or a pager in front the shell behind it heard
+    /// nothing, sat out the grace period, and was then killed outright -- no history
+    /// written, no exit trap run -- or outlived the buffer altogether.
+    pub(crate) fn hangup(&self) {
+        self.signal_all(Signal::SIGHUP);
+    }
+
+    /// The last word, to the same two groups as [`Pty::hangup`].
+    pub(crate) fn kill(&self) {
+        self.signal_all(Signal::SIGKILL);
+    }
+
+    fn signal_all(&self, sig: Signal) {
+        let _guard = self
+            .reap_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.reaped() {
+            return;
+        }
+        // The foreground group first, then the child's own if that is a different one.
+        // `> 1` for the reason `signal` gives: group 0 is Emacs' own.
+        let foreground = self.foreground().ok();
+        let groups = [
+            foreground,
+            Some(self.child).filter(|c| Some(*c) != foreground),
+        ];
+        for Pid(target) in groups.into_iter().flatten() {
+            if target > 1 {
+                let _ = killpg(NixPid::from_raw(target), sig);
+            }
         }
     }
 
@@ -555,14 +566,24 @@ fn resolve(program: &OsStr, path: Option<&str>) -> Result<CString> {
 /// anything more with `EINVAL`, so fall back to setting the flag by hand.
 fn open_master() -> Result<PtyMaster> {
     use nix::fcntl::OFlag;
-    match posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_CLOEXEC) {
+    let master = match posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_CLOEXEC) {
         Err(Errno::EINVAL) => {
             let master = posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY)?;
             fcntl(&master, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
-            Ok(master)
+            master
         }
-        other => Ok(other?),
+        other => other?,
+    };
+    {
+        // Non-blocking, so that neither end of the conversation can park a thread in the
+        // kernel on the child's say-so: `write_some` returns short instead of sleeping on
+        // a full input queue, and `read` returns empty-handed instead of sleeping past the
+        // interrupt pipe. The flag is on the master's own open file description and the
+        // child opens the slave afresh, so nothing the child sees changes.
+        let flags = OFlag::from_bits_retain(fcntl(&master, FcntlArg::F_GETFL)?);
+        fcntl(&master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     }
+    Ok(master)
 }
 
 // nix's `ioctl_write_ptr_bad!` would generate an equivalent `unsafe fn` returning

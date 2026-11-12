@@ -412,7 +412,19 @@ const KITTY_STACK_LIMIT: usize = 16;
 /// placement can force. 4096 is already far more rows than any legitimate picture
 /// needs — a screen is a few dozen to a few hundred rows — while remaining nowhere
 /// near tight enough to visibly clip anything real.
-const MAX_IMAGE_CELL_SPAN: u16 = 4096;
+const MAX_IMAGE_CELL_SPAN: u16 = crate::emu::image::MAX_CELL_SPAN;
+
+/// How many rows of picture may be laid between two drains.
+///
+/// A placement is a few bytes and a rectangle is thousands of rows -- `a=p,i=1` naming a
+/// picture transmitted once is thirteen bytes for [`MAX_IMAGE_CELL_SPAN`] real
+/// linefeeds, each archiving a row of placements -- and the reader's backpressure is
+/// only consulted between reads, so one 64 KiB read of those was gigabytes of scrollback
+/// from a file small enough to `cat` by accident. Past this many rows a placement draws
+/// nothing until Emacs has drained, which is the same order as the backlog at which the
+/// reader stops reading anyway, and hundreds of screenfuls of pictures per frame beyond
+/// what anything real produces.
+const IMAGE_ROW_BUDGET: u32 = 8192;
 
 /// A `width=`/`height=` value that is a plain cell count, or 0 for anything else.
 ///
@@ -915,6 +927,11 @@ struct State {
     /// outlive the grid position it was taken from.
     evicted_total: usize,
     events: Vec<Event>,
+    /// Rows of picture laid since the last drain; see [`IMAGE_ROW_BUDGET`].
+    image_rows_laid: u32,
+    /// What DECSC saved besides the position -- pen, underline colour, and whether
+    /// the line-drawing set was selected -- for the primary and alternate screens.
+    saved_pen: [Option<(Style, Color, bool)>; 2],
     /// The last graphic character printed, for REP. Held after `dec_graphic` translation,
     /// so repeating a box-drawing character repeats what was actually drawn.
     ///
@@ -1008,9 +1025,16 @@ fn extended(param: &[u16], iter: &mut super::parser::ParamsIter<'_>) -> Option<C
         // The colon form permits an empty color-space id: 38:2::R:G:B
         2 => {
             let (a, b, c) = (next()?, next()?, next()?);
-            match (param.len() >= 6, next()) {
-                (true, Some(d)) => Some(Color::Rgb(b as u8, c as u8, d as u8)),
-                _ => Some(Color::Rgb(a as u8, b as u8, c as u8)),
+            // Only the colon form can carry the colour-space id, and only then is there
+            // a sixth sub-parameter to look for. Asking unconditionally pulled the next
+            // *parameter* off the outer iterator in the semicolon form, so
+            // `38;2;R;G;B;48;2;...` lost its `48` and `38;2;R;G;B;1` lost its bold.
+            if param.len() >= 6
+                && let Some(d) = next()
+            {
+                Some(Color::Rgb(b as u8, c as u8, d as u8))
+            } else {
+                Some(Color::Rgb(a as u8, b as u8, c as u8))
             }
         }
         _ => None,

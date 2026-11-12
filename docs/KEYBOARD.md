@@ -66,9 +66,17 @@ not just on the one `C-c` prefix cooked always keeps:
 
 | | Reserved for Emacs | Reach it anyway |
 |---|---|---|
-| Shell ran a command (OSC 133 live) | `C-c` only | `cooked-toggle-peek` (`C-c C-v`), or `evil`'s own `C-z` |
-| Raw read, no OSC 133 seen | `C-c`, plus `cooked-raw-exceptions` (`C-g C-x C-h C-u C-l` by default) | `cooked-send-literal-key` (`C-c C-q`) |
-| Alternate screen | `C-c` only | `cooked-toggle-peek` (`C-c C-v`), or `evil`'s own `C-z` |
+| Shell ran a command (OSC 133 live) | `C-c`, plus `cooked-keymap-exceptions` | `cooked-toggle-peek` (`C-c C-v`), or `evil`'s own `C-z` |
+| Raw read, no OSC 133 seen | `C-c`, `cooked-keymap-exceptions`, plus `cooked-raw-exceptions` (`C-g C-x C-h C-u C-l` by default) | `cooked-send-literal-key` (`C-c C-q`) |
+| Alternate screen | `C-c`, plus `cooked-keymap-exceptions` | `cooked-toggle-peek` (`C-c C-v`), or `evil`'s own `C-z` |
+
+`cooked-keymap-exceptions` (`C-x`, `M-x` and `M-:` by default) is the list for *your* keys
+rather than for a guess about the program: a leader, a window-switching chord, anything
+your configuration lives on. It applies in every state, the alternate screen included,
+and takes any key `kbd` can read — so `"M-o"` or `"C-M-v"` work, which the per-state
+lists below cannot express. A Meta chord can only be held back on a graphical frame; on a
+terminal frame it is two bytes and the first is already gone. `C-c C-q` still sends any
+one of them through.
 
 The first row is the common case, and it keeps nothing back. `cooked-raw-exceptions`
 hedges a state cooked cannot read — a raw program and a shell editing its own prompt line

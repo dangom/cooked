@@ -63,6 +63,10 @@
 ;; it can be reached from.
 (require 'cooked-util)
 
+(require 'url-util)
+
+(defvar cooked--host)
+(declare-function cooked--foreign-host-p "cooked")
 (declare-function cooked--suspended-p "cooked")
 (declare-function cooked--child-owns-keyboard-p "cooked")
 (declare-function cooked-mouse-event "cooked-mouse")
@@ -179,9 +183,49 @@ answered when that layer is loaded; then goto-addr\='s own
 The shared tail of `cooked-follow-link\=' and `cooked-follow-link-at-point\=',
 which differ only in what they do *before* deciding to open anything."
   (if-let* ((uri (cooked-link-uri)))
-      (browse-url uri)
+      (cooked--open-uri uri)
     (or (cooked--run-seam-until-success 'cooked-link-follow-functions)
         (goto-address-at-point))))
+
+(defcustom cooked-link-schemes '("http" "https" "mailto" "file")
+  "URI schemes an `OSC 8' hyperlink is allowed to open.
+
+The destination of such a link is chosen by whatever printed it and is not what
+the text on screen says, so it is not handed to `browse-url' unexamined.  That
+function dispatches on the scheme to whatever handler the system has registered
+-- `open' on macOS, which will mount a share for `smb:' or launch an application
+for a scheme one registered -- and none of that should be one click on a line of
+output away.
+
+`file' is the one scheme not sent there at all: a local name is visited in
+Emacs, and a name on another host or a remote file name is refused, for the
+reason `cooked--local-name' gives."
+  :type '(repeat string)
+  :group 'cooked)
+
+(defun cooked--open-uri (uri)
+  "Open URI, the destination of an `OSC 8' link, if it is a kind we open.
+
+Says where it is going either way, because the link's own text does not."
+  (let* ((scheme (and (string-match "\\`\\([a-zA-Z][a-zA-Z0-9+.-]*\\):" uri)
+                      (downcase (match-string 1 uri)))))
+    (cond
+     ((not (member scheme cooked-link-schemes))
+      (user-error "cooked: not following `%s' (see `cooked-link-schemes')" uri))
+     ((equal scheme "file")
+      (if (and (string-match "\\`file://\\([^/]*\\)\\(/.*\\)\\'" uri)
+               (let ((host (url-unhex-string (match-string 1 uri)))
+                     (path (url-unhex-string (match-string 2 uri))))
+                 (and (let ((cooked--host host)) (not (cooked--foreign-host-p)))
+                      (when-let* ((name (cooked--local-name path)))
+                        (message "cooked: visiting %s" name)
+                        (find-file-other-window name)
+                        t))))
+          t
+        (user-error "cooked: not following `%s' (not a local file)" uri)))
+     (t
+      (message "cooked: opening %s" uri)
+      (browse-url uri)))))
 
 (defun cooked-follow-link (&optional event)
   "Open the link at point, or hand EVENT to the child if it owns the input.

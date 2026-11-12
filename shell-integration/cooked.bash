@@ -18,6 +18,12 @@
 # below is here because it is not about completion. See the comment on it.
 
 [[ $TERM_PROGRAM == cooked ]] || return
+# bash 4.4 or newer.  PS0 -- the only honest place for the `C' mark -- and `${var@P}'
+# both arrived there, and an older bash fails on them one prompt at a time rather than
+# once.  macOS still ships 3.2 as /bin/bash, so this is not a hypothetical shell: it
+# gets no integration, and cooked says `bare' in the mode line, rather than a prompt
+# that prints an error before every command.
+(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )) || return
 [[ -n "${COOKED_INTEGRATION_LOADED-}" ]] && return
 COOKED_INTEGRATION_LOADED=1
 [[ $- == *i* ]] || return

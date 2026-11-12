@@ -212,8 +212,10 @@ there already — the module boundary is a session handle and a wakeup pipe.
 
 Things that are missing rather than ideas:
 
-- **Mouse drag and motion.** Press, release and wheel work; modes 1002/1003 are tracked but
-  Emacs drag events are not forwarded.
+- **Pointer motion with nothing held.** Press, release, wheel and drag are all
+  forwarded, with the cell taken from the pointer's own pixel. Mode 1003's other half --
+  motion with no button down -- is not: it would mean tracking the pointer for as long as
+  the child asks.
 - **Reflow under a scroll region.** Both scrollback and the live screen rewrap on a width
   change now — `Screen::reflow` recovers the logical lines from `Row::wrapped` and chunks
   them again, preserving the round trip. A set scroll region still falls back to clamping,

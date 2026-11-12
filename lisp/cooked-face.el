@@ -47,6 +47,22 @@ so a theme that styles those faces wins."
 
 (defvar-local cooked--face-cache nil)
 
+(defconst cooked--face-cache-limit 4096
+  "How many renditions `cooked--face-cache' holds before it starts over.
+
+A palette is a few dozen entries and a syntax theme in truecolor a few hundred,
+which is what the cache is for.  A gradient is a new colour per cell and so a
+new entry per cell, for ever: nothing was evicted until the theme changed, and a
+session that had shown a few of them was carrying tens of thousands of faces
+and paying for it at every garbage collection.  Starting over costs one
+screenful of misses.")
+
+(defun cooked--trim-face-cache ()
+  "Empty this buffer's face cache if it has outgrown its use."
+  (when (and (hash-table-p cooked--face-cache)
+             (> (hash-table-count cooked--face-cache) cooked--face-cache-limit))
+    (clrhash cooked--face-cache)))
+
 ;;;; Colors and faces
 
 (defun cooked--xterm-256 (index)
@@ -306,11 +322,19 @@ twice and compare non-`eq\=' -- which
 (defun cooked--face-build (fg bg attrs ul)
   "Build the face plist `cooked--face' memoizes for FG, BG, ATTRS and UL."
   (let* ((reverse (cooked--attr-p attrs cooked--attr-reverse))
-         (fg* (cooked--color (if reverse bg fg)))
-         (bg* (cooked--color (if reverse fg bg)))
+         (fg* (cooked--color fg))
+         (bg* (cooked--color bg))
          (face nil))
     (when fg* (setq face (plist-put face :foreground fg*)))
     (when bg* (setq face (plist-put face :background bg*)))
+    ;; Left to Emacs rather than done here by swapping the two.  A swap has
+    ;; nothing to swap when a colour is the default one -- which is nil on this
+    ;; side, the theme's to supply -- so reverse video on default colours came
+    ;; out as no face at all: `less' and `man' standout, a search hit, the
+    ;; shell's own active region, a tmux status line, all invisible.  Emacs
+    ;; inverts against whatever the defaults resolve to, and goes on doing so
+    ;; across a theme change without this cache having to know.
+    (when reverse (setq face (plist-put face :inverse-video t)))
     (pcase-dolist (`(,bit ,property ,value) cooked--attr-face-properties)
       (when (cooked--attr-p attrs bit)
         (setq face (plist-put face property value))))

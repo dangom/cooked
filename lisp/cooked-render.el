@@ -475,7 +475,15 @@ really has fewer used rows than before rather than every time
 pixels.  That disagreement is permanent on a window whose rows differ in height,
 and correcting for it once per drain is the oscillation itself."
   (let* ((target (or pos (point-max)))
-         (foot (or bottom target)))
+         (foot (or bottom target))
+         ;; Every row ends in a newline, the last included, so `point-max' is the
+         ;; start of an empty line below the last row rather than a place on it.
+         ;; Measured from there the window kept that empty line at its foot and
+         ;; paid for it with a row of real text off the top.
+         (foot (if (and (= foot (point-max)) (> foot (point-min))
+                        (eq (char-before foot) ?\n))
+                   (1- foot)
+                 foot)))
     (cooked--dolist-windows w windows
       (set-window-point w target)
       (let ((top (save-excursion
@@ -521,6 +529,9 @@ resources before the rows that name them, the viewport before the render that
 invalidates it, the render before the marks resolved against the text it wrote,
 and the region shaped before anything measures it."
   (cooked--install-resources update)
+  ;; Between frames, never inside one: a face handed out earlier in this drain is
+  ;; already on text, and the table it came from can go without it noticing.
+  (cooked--trim-face-cache)
   ;; `let*', emphatically: these initialisers delete and insert, and under plain
   ;; `let' they would run before the two bindings above them took effect -- so a
   ;; protected buffer would abort the redisplay half-done from inside the process

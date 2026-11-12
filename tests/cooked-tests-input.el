@@ -24,8 +24,51 @@ customizable exceptions at all."
       '("/bin/sh" "-c" "printf '\\033[?1049h'; stty raw -echo; cat -v")
     (should (cooked-tests--settle (lambda () cooked--alt)))
     (should (eq (current-local-map) (cooked--forwarding-map cooked-alt-map)))
-    (dolist (key '("C-g" "C-x" "C-h" "C-u" "C-l"))
+    (dolist (key '("C-g" "C-h" "C-u" "C-l"))
       (should (eq (lookup-key cooked-alt-map (kbd key)) #'cooked-send-key)))))
+
+(ert-deftest cooked-keymap-exceptions-stay-with-emacs-everywhere ()
+  "The alternate screen keeps nothing back on the program's account, which is
+right about the program and wrong about the user: a leader key or \\`M-x' is not
+the child's however full-screen it is.  `cooked-keymap-exceptions' is the list
+for those, and it reaches every forwarding map, the Meta overlay included."
+  (let ((cooked-keymap-exceptions '("C-x" "M-x" "M-l" "C-M-v" "<f5>")))
+    (let* ((map (cooked--build-passthrough-map nil))
+           (overlay (cooked--build-meta-overlay map)))
+      (should-not (lookup-key map (kbd "C-x")))
+      (should-not (lookup-key map (kbd "<f5>")))
+      (should (eq (lookup-key map (kbd "C-a")) #'cooked-send-key))
+      (dolist (key '("M-x" "M-l" "C-M-v" "C-x" "<f5>"))
+        (should-not (commandp (lookup-key overlay (kbd key)))))
+      ;; And nothing else went with them.
+      (should (eq (lookup-key overlay (kbd "M-t")) #'cooked-send-meta-key))
+      (should (eq (lookup-key overlay (kbd "<f6>")) #'cooked-send-key)))))
+
+(ert-deftest cooked-graphical-control-chords-reach-the-child ()
+  "A graphical frame reports `C-SPC' as the space with a modifier, not as NUL,
+and a map that binds only 0-127 never sees it -- so it set the mark in the
+terminal buffer instead of in the program.  They are bound, and they are spelled
+the way a terminal spells them."
+  (dolist (key '("C-SPC" "C-/" "C-;" "C-," "C-S-a" "C-M-SPC"))
+    (should (commandp (lookup-key (cooked--build-meta-overlay cooked-alt-map)
+                                  (kbd key)))))
+  (let ((cooked--keys 'legacy))
+    (should (equal (cooked--encode-event (aref (kbd "C-SPC") 0)) "\0"))
+    (should (equal (cooked--encode-event (aref (kbd "C-/") 0)) "\C-_"))
+    (should (equal (cooked--encode-event (aref (kbd "C-a") 0)) "\C-a"))
+    ;; No C0 spelling exists, so the character goes as itself.
+    (should (equal (cooked--encode-event (aref (kbd "C-;") 0)) ";"))
+    (should (equal (cooked--encode-event (aref (kbd "M-a") 0)) "\ea")))
+  ;; A child that asked to be told gets the chord spelled out.
+  (let ((cooked--keys 'modify-other))
+    (should (equal (cooked--encode-event (aref (kbd "C-;") 0)) "\e[27;5;59~"))
+    (should (equal (cooked--encode-event (aref (kbd "C-S-a") 0)) "\e[27;6;65~"))
+    (should (equal (cooked--encode-event ?a) "a"))
+    (should (equal (cooked--encode-event ?A) "A")))
+  (let ((cooked--keys 'kitty))
+    (should (equal (cooked--encode-event (aref (kbd "C-a") 0)) "\e[97;5u"))
+    (should (equal (cooked--encode-event (aref (kbd "C-S-a") 0)) "\e[97;6u"))
+    (should (equal (cooked--encode-event ?a) "a"))))
 
 (ert-deftest cooked-policy-keeps-nothing-back-once-the-shell-has-spoken ()
   "`cooked-raw-exceptions\=' hedges a state cooked cannot read: a raw program and
@@ -162,7 +205,7 @@ sends one event that no list of character codes can name, and the map worn
 there has to bind it -- through an ESC prefix, because that is the only place
 `define-key' will store a Meta character."
   (let ((map (cooked--build-meta-overlay cooked-alt-map)))
-    (dolist (key '("M-t" "M-x" "M-SPC" "C-M-t" "M-ESC"))
+    (dolist (key '("M-t" "M-y" "M-SPC" "C-M-t" "M-ESC"))
       (should (eq (lookup-key map (kbd key)) #'cooked-send-meta-key)))
     ;; The Escape key keeps its own zero-latency spelling: `escape' is what a
     ;; graphical frame sends, and it only decays to a bare ESC when unbound.
@@ -352,30 +395,27 @@ that byte is the whole of it and the line discipline does the rest."
       (cooked-suspend)
       (should (cooked-tests--settle (lambda () (cooked-tests--stopped-p job)) 4)))))
 
-(ert-deftest cooked-suspend-stops-the-job-with-isig-off ()
-  "Regression: \\[cooked-suspend] did nothing at all on macOS to a program that
-had cleared ISIG.
+(ert-deftest cooked-job-control-keys-are-bytes-to-a-program-that-cleared-isig ()
+  "A program that turns ISIG off did it to read ^C and ^Z for itself -- vim, a
+nested Emacs, and above all tmux, which passes them on to whatever is in the
+pane.  A terminal writes the byte and that is all it does.
 
-With ISIG off there is no byte to write -- the line discipline would hand it
-straight to the child instead of raising anything -- so `cooked--send-job-control\='
-falls back on the signal itself.  That signal was spelled 20, which is SIGTSTP
-on Linux and SIGCHLD on the BSDs, and SIGCHLD is ignored by default: the job
-carried on and the keystroke looked broken.  The number is the core\='s to pick
-now; this side names it.
-
-`stty raw -isig\=' is the smallest thing that reproduces it, and it is exactly
-what a full-screen program does when it wants ^Z as a byte of its own."
-  (skip-unless (executable-find "zsh"))
-  (cooked-tests--with-zsh
-    (cooked--send cooked--session "sh -c 'stty raw -isig; sleep 60'\r")
-    (let ((job (cooked-tests--foreground-job)))
-      (should job)
-      (should (cooked-tests--settle
-               (lambda () (not (plist-get (cooked--job-control cooked--session) :isig)))
-               4))
-      (should-not (cooked-tests--stopped-p job))
-      (cooked-suspend)
-      (should (cooked-tests--settle (lambda () (cooked-tests--stopped-p job)) 4)))))
+This used to signal the foreground group instead.  Under tmux that group is the
+client, which ignores the signal, so \\[cooked-interrupt] reached nothing: the
+program the user meant was in a pane, on another pty, waiting for a byte."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c" "stty raw -isig -echo; printf ready; exec cat -v")
+    (should (cooked-tests--settle
+             (lambda () (and (string-search "ready" (cooked-tests--text))
+                             (not (plist-get (cooked--job-control cooked--session)
+                                             :isig))))
+             4))
+    (cooked-interrupt)
+    (cooked-suspend)
+    (should (cooked-tests--settle
+             (lambda () (string-search "^C^Z" (cooked-tests--text))) 4))
+    ;; And the child is still there: nothing was signalled.
+    (should (cooked--live-p cooked--session))))
 
 (ert-deftest cooked-mode-line-names-the-input-mode ()
   "Stepping out used to have no mode-line indicator at all, which made it easy
@@ -624,8 +664,19 @@ something nobody read.  It is dropped."
     (cooked-tests--with-kill "a\e[201~; rm -rf /" (cooked-paste))
     (should (cooked-tests--settle
              (lambda ()
-               (string-search "^[[200~a; rm -rf /^[[201~" (cooked-tests--text)))))
+               (string-search "^[[200~a[201~; rm -rf /^[[201~" (cooked-tests--text)))))
     (should-not (string-search "^[[201~; rm" (cooked-tests--text)))))
+
+(ert-deftest cooked-paste-cannot-reassemble-an-end-marker ()
+  "Deleting the end marker in one pass leaves a way round it: wrap one marker in
+the two halves of another, and removing the inner one closes the halves up into
+a marker nobody removed.  No ESC survives a paste at all, so there is nothing
+to close up."
+  (should (equal (cooked--bracketed-paste "x\e[20\e[201~1~y\n")
+                 "\e[200~x[20[201~1~y\r\e[201~"))
+  (should-not (string-search "\e" (cooked--paste-text "a\e]52;c;eA==\ab\u009b31mc")))
+  ;; Tabs and line endings are the paste; everything else in C0 is not.
+  (should (equal (cooked--paste-text "a\tb\r\nc\nd\0") "a\tb\rc\rd")))
 
 (ert-deftest cooked-paste-confirms-lines-the-child-would-run ()
   "Without bracketed paste an embedded newline is Enter, so a refused

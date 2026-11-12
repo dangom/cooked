@@ -822,9 +822,34 @@ tracking where it sits; moving it would corrupt a redisplay cooked cannot see."
 
 (ert-deftest cooked-osc-52-copies-to-the-kill-ring ()
   (cooked-tests--with-session '("/bin/sh" "-c" "printf '\\033]52;c;aGVsbG8gd29ybGQ=\\007'; sleep 5")
-    (let ((kill-ring nil))
+    (let ((kill-ring nil)
+          (cooked-clipboard-write t))
       (should (cooked-tests--settle
                (lambda () (equal (car kill-ring) "hello world")))))))
+
+(ert-deftest cooked-osc-52-is-off-until-asked-for ()
+  "Anything that can print can send this, and what it gets is the next paste."
+  (should-not (default-value 'cooked-clipboard-write)))
+
+(ert-deftest cooked-osc-52-reads-the-standard-alphabet ()
+  "OSC 52 is plain base64.  Decoded as base64url, any payload with a `+' or a
+`/' in it -- `>>>' is `Pj4+' -- was dropped without a word."
+  (cooked-tests--with-session '("/bin/sh" "-c" "sleep 5")
+    (let ((kill-ring nil)
+          (cooked-clipboard-write t))
+      (cooked--osc-clipboard '("c" "Pj4+"))
+      (should (equal (car kill-ring) ">>>"))
+      (cooked--osc-clipboard '("c" "Pz8/"))
+      (should (equal (car kill-ring) "???")))))
+
+(ert-deftest cooked-a-forged-announcement-cannot-choose-what-is-typed ()
+  "The nonce is written back to the child inside a completion request, so it
+is digits or it is nothing."
+  (cooked-tests--with-session '("/bin/sh" "-c" "sleep 5")
+    (cooked--osc-announce ";2;12345;1")
+    (should (equal cooked--completion-nonce "12345"))
+    (cooked--osc-announce ";2;$(touch /tmp/x) #;1")
+    (should-not cooked--completion-nonce)))
 
 (ert-deftest cooked-osc-52-never-answers-a-read ()
   "Replying to a query would hand the clipboard to whatever asked."

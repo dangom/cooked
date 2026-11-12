@@ -137,6 +137,8 @@ fn render(body: &[u8], bitmap: &mut Bitmap) {
     }
     let mut pen = palette[0];
     let (mut x, mut band) = (0u32, 0u32);
+    // Columns this render may still paint; see the `Data` arm.
+    let mut budget = 4 * bitmap.size.area().max(4096);
 
     for token in Tokens::new(body) {
         match token {
@@ -167,7 +169,22 @@ fn render(body: &[u8], bitmap: &mut Bitmap) {
                 // thousand pixels, and stepping the overrun one column at a time would
                 // tie the work to that count -- safe only while `measure`'s own
                 // `MAX_PIXELS` check holds, which is an invariant two functions away.
-                let drawn = bitmap.size.w.saturating_sub(x).min(repeat);
+                //
+                // And bounded once more by `budget`, because a canvas bounds a run and
+                // not a stream: `$` rewinds for free, so `!8388608@$` over and over is
+                // ten bytes a pass across a canvas eight million columns wide, with the
+                // emulator's lock held for all of it. An honest picture sets each pixel
+                // about once; several times the canvas is room for any encoder's
+                // overdraw and still an end. A run that sets no bits paints nothing and
+                // costs nothing.
+                let drawn = if bits == 0 {
+                    0
+                } else {
+                    let drawn = bitmap.size.w.saturating_sub(x).min(repeat);
+                    let drawn = u32::try_from(budget.min(u64::from(drawn))).unwrap_or(drawn);
+                    budget -= u64::from(drawn);
+                    drawn
+                };
                 for _ in 0..drawn {
                     for row in 0..6 {
                         if bits & (1 << row) != 0 {

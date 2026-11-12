@@ -182,6 +182,15 @@ screen."
            cooked--title)
       cooked--foreground-label))
 
+(defun cooked--mode-line-literal (string)
+  "STRING as the mode line will show it verbatim.
+
+A string an `:eval' form returns is read for %-constructs like any other
+mode-line string, and both the title and the host are text the child chose: a
+title of `50% done' lost its percent sign, and `%b' printed the buffer's name
+where the program's had been asked for."
+  (string-replace "%" "%%" string))
+
 (defun cooked--mode-line ()
   "Compact indicator: what is running, who owns the keyboard, how it went."
   ;; A dead session's buffer-locals do not decay -- they hold whatever they last
@@ -200,7 +209,8 @@ screen."
        ;; state word starts meaning something different, and saying which host
        ;; is what keeps that from reading as cooked being erratic across hosts.
        (when (cooked--foreign-host-p)
-         (propertize (format " @%s" (car (split-string cooked--host "\\.")))
+         (propertize (cooked--mode-line-literal
+                      (format " @%s" (car (split-string cooked--host "\\."))))
                      'face 'shadow))
        ;; The separator space stays outside the `propertize', so the
        ;; `mouse-face' run covers the word and not the gap before it -- the
@@ -217,7 +227,8 @@ screen."
          ('still (propertize " still" 'face 'cooked-still))
          ('frozen (propertize " frozen" 'face 'cooked-peek)))
        (when subject
-         (propertize (format " %s" (truncate-string-to-width subject 24 nil nil t))
+         (propertize (cooked--mode-line-literal
+                      (format " %s" (truncate-string-to-width subject 24 nil nil t)))
                      'face 'shadow))
        (when code
          (concat

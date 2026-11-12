@@ -1093,10 +1093,53 @@ early, and the shell's echo of the submitted line would disagree with
 what was displayed."
   (save-excursion
     (cooked--goto-screen-row (cooked-cursor-row cooked--cursor) 'extend)
-    (let ((short (- (cooked-cursor-col cooked--cursor) (- (line-end-position) (point)))))
+    ;; In cells, as the cursor is: a row of wide characters is shorter in
+    ;; characters than the grid it stands for, and padding by the difference in
+    ;; characters added a space for every one of them.
+    (let ((short (- (cooked-cursor-col cooked--cursor)
+                    (cdr (cooked--forward-cells (cooked-cursor-col cooked--cursor))))))
       (when (> short 0)
         (goto-char (line-end-position))
         (insert (make-string short ?\s))))))
+
+(defun cooked--forward-cells (cells)
+  "Move point forward over CELLS grid cells of the current row.
+
+Returns (POSITION . REACHED): where that is, and how many cells were actually
+there to cross, which is fewer than CELLS when the row's text ends first.
+
+The cursor and every anchor the core reports are in cells, and the buffer is in
+characters.  The two agree for as long as each character is one cell, which is
+why this was once a plain `forward-char': correct for ASCII and wrong by one
+for every wide character to the left -- the cursor drawn a cell further right
+for each, on any line with CJK or an emoji on it.
+
+ASCII is still answered without looking at a single character.  Past it the
+walk is by cluster, on the core's own rule for what one is: a character, then
+whatever joins it -- combining marks, a variation selector that makes it an
+emoji, a skin tone, a ZWJ and the character it binds."
+  (let* ((bol (point))
+         (eol (line-end-position))
+         (plain (progn (skip-chars-forward "\0-\177" (min eol (+ bol cells)))
+                       (- (point) bol))))
+    (if (or (= plain cells) (= (point) eol))
+        (cons (point) plain)
+      (let ((reached plain))
+        (while (and (< reached cells) (< (point) eol))
+          (let ((width (char-width (char-after))))
+            (forward-char 1)
+            (while (and (< (point) eol)
+                        (let ((next (char-after)))
+                          (cond
+                           ((eq next #x200d)
+                            (forward-char (min 2 (- eol (point)))) t)
+                           ((eq next #xfe0f)
+                            (setq width (max width 2)) (forward-char 1) t)
+                           ((or (<= #x1f3fb next #x1f3ff)
+                                (and (> next 255) (zerop (char-width next))))
+                            (forward-char 1) t)))))
+            (setq reached (+ reached width))))
+        (cons (point) reached)))))
 
 (defconst cooked--read-only-props
   '(read-only t front-sticky (read-only) rear-nonsticky (read-only))
@@ -1150,6 +1193,10 @@ that one glyph kind, exactly as a live row rendered without a known origin does.
         ;; this text is scrollback is added on top of it.
         (add-text-properties start (point)
                              `(cooked-scrollback t ,@cooked--read-only-props))
+        ;; One search over the batch, which for a flood of plain text finds
+        ;; nothing and costs about what the insertion did.
+        (when (cooked--cell-fit-p)
+          (cooked--fit-cells start (point)))
         ;; Neither link pass runs here.  Both are `cooked--fontify-region''s
         ;; now, so a batch that scrolls past without ever being displayed --
         ;; which is what a flood is -- costs nothing to scan, and the file
@@ -1937,7 +1984,8 @@ step exists to keep the next one from running:
   1. A row whose width the grid already accounts for and whose characters no
      font can widen is finished here, with nothing measured at all.  That is
      a uniform row in a fixed-pitch font, which is the overwhelming majority
-     of rows -- see `cooked--row-mismeasured-p' and `cooked--ascii-fixed-pitch-p'.
+     of rows -- see `cooked--row-mismeasured-p' and
+     `cooked--ascii-fixed-pitch-p'.
   2. A row whose text was already seen to fit under this font and this geometry
      is finished at a hash lookup -- see `cooked--row-wraps-p'.
   3. Only what is left reaches `vertical-motion', and only what that says wraps
@@ -2093,6 +2141,173 @@ outright, with no scrollback and no command records of Emacs\=' own to re-apply.
 Empty by default, and run through `cooked--run-seam\=', so an entry that signals
 costs its own contribution and neither the rest of the hook nor the drain.")
 
+;;;; Fitting foreign glyphs to the cell
+;;
+;; A terminal is a grid and a buffer is not.  Every character the default font
+;; has stands on one cell because the font is monospaced; every character it
+;; lacks is drawn from whatever font the fontset finds, at that font's own
+;; metrics, and those are nobody's cell.  The cost is not only a column that
+;; drifts.  A line is as tall as its tallest glyph, so one fallback character
+;; makes its row a pixel or six taller than its neighbours, the rows below move
+;; down to make room, and the last of them leaves the window -- and when the
+;; character is a spinner frame, they move back on the next tick.  That is what
+;; a full-screen program shimmering looks like from the inside.
+
+(defcustom cooked-fit-fallback-glyphs t
+  "Whether glyphs from a fallback font are scaled and padded to their cells.
+
+A character the default font does not have is drawn from another font, whose
+glyphs are generally taller and wider than a cell.  When this is non-nil such
+a glyph is scaled down until it fits the cell box, moved onto the baseline the
+row already has, and padded out to the width the terminal gave it -- so that
+rows stay one height and columns stay in line whatever is printed.
+
+The price is that those characters are drawn somewhat smaller than their font
+would draw them.  A default font, or a fontset, that covers what your programs
+print costs nothing here and looks best; this is for everything else.
+Graphical frames only."
+  :type 'boolean
+  :group 'cooked)
+
+(defvar cooked--cell-fit-cache (make-hash-table :test #'eq)
+  "What it takes to fit each character seen so far, by character.
+
+t for one that fits as it is or cannot be made to, else the list of display
+specifications `cooked--measure-cell-fit' settled on.  Valid for one default
+font at one text scale, which is what `cooked--cell-fit-key' records.")
+
+(defvar cooked--cell-fit-fonts (make-hash-table :test #'equal)
+  "The same answers by (FONT CELLS ADVANCE), which is what they depend on.
+
+Finding an answer is a few dozen trial layouts, each of which may open a font at
+a size nothing has used yet, and that is tens of milliseconds the first time a
+character is seen.  But the answer is a property of the font and of how wide the
+glyph is, not of the character: every frame of a braille spinner comes from one
+font at one advance.  So the search is made once for all of them.")
+
+(defvar cooked--cell-fit-key nil
+  "The (FONT . FACE-REMAPPING) `cooked--cell-fit-cache' was measured under.")
+
+(defun cooked--cell-fit-size (char spec remapping)
+  "The (WIDTH . HEIGHT) in pixels of `a', CHAR and `a' laid out on one line.
+
+CHAR carries SPEC as its `display' property, or none when SPEC is nil, and the
+line is laid out under REMAPPING, the measuring buffer's `face-remapping-alist'
+-- which is how a terminal zoomed with `text-scale-mode' is measured at its own
+size rather than at the frame's.
+
+Asked of redisplay's own layout code rather than worked out from font metrics.
+The metrics say what should happen; what does happen passes through a font
+opened at a rounded pixel size and metrics rounded again from there, and a row
+one pixel too tall is exactly the thing being prevented."
+  (with-current-buffer (get-buffer-create " *cooked-cell-fit*")
+    (setq-local face-remapping-alist remapping)
+    (erase-buffer)
+    (insert "a" (if spec (propertize (string char) 'display spec) (string char)) "a")
+    (buffer-text-pixel-size nil nil t)))
+
+(defun cooked--measure-cell-fit (char)
+  "The display specifications that make CHAR occupy exactly its cells, or t.
+
+t when it already does, or when nothing here can make it.
+
+The starting point is arithmetic: the largest scale at which the font's line box
+fits a row and the glyph's advance fits its cells, then a lift that slides the
+box so neither its ascent nor its descent pokes out -- the two fonts need not
+agree on where in the box the baseline is, and a symbol font with a deep descent
+makes a row taller from below however small it is drawn.  The answer is then
+measured, and nudged or shrunk a step at a time until the row it produces is
+the height and width of a plain one.  Once per character; see
+`cooked--cell-fit-cache'."
+  (or (when-let* ((font (car (ignore-errors (internal-char-font nil char))))
+                  (info (ignore-errors (font-info font)))
+                  (glyph (ignore-errors
+                           (aref (font-get-glyphs font 0 1 (string char)) 0)))
+                  (default (ignore-errors (font-info (face-font 'default))))
+                  (cells (char-width char))
+                  ((> cells 0)))
+        (let* ((remapping face-remapping-alist)
+               (plain (cooked--cell-fit-size ?a nil remapping))
+               ;; Three plain characters; CHAR stands where the middle one is.
+               (want (cons (/ (* (car plain) (+ 2 cells)) 3) (cdr plain))))
+          (if (equal (cooked--cell-fit-size char nil remapping) want)
+              t
+            (with-memoization
+                (gethash (list (aref info 1) cells (aref glyph 4))
+                         cooked--cell-fit-fonts)
+            (let* ((ascent0 (float (aref default 8)))
+                   (descent0 (float (aref default 9)))
+                   (ascent (float (aref info 8)))
+                   (descent (float (aref info 9)))
+                   (box (max 1.0 (+ ascent descent)))
+                   (room (* cells (float (aref default 11))))
+                   (scale0 (min 1.0
+                                (/ (+ ascent0 descent0) box)
+                                (/ room (max 1.0 (float (aref glyph 4)))))))
+              (catch 'fit
+                (dotimes (step 8)
+                  (let* ((scale (* scale0 (expt 0.94 step)))
+                         (lift (cond ((> (* scale descent) descent0)
+                                      (- (* scale descent) descent0))
+                                     ((> (* scale ascent) ascent0)
+                                      (- ascent0 (* scale ascent)))
+                                     (t 0.0))))
+                    ;; In pixels, either way: rounding is the thing in doubt.
+                    (dolist (nudge '(0 1 -1 2 -2))
+                      (let* ((raise (/ (+ lift nudge) (* scale box)))
+                             (spec `(,@(and (< scale 1.0) `((height ,scale)))
+                                     ,@(and (/= raise 0.0) `((raise ,raise)))
+                                     (min-width (,cells)))))
+                        (when (equal (cooked--cell-fit-size char spec remapping)
+                                     want)
+                          (throw 'fit spec))))))
+                t))))))
+      t))
+
+(defun cooked--fit-cells (beg end)
+  "Fit the fallback glyphs between BEG and END to their cells.
+
+Called on a row the core has said is not plain ASCII, so the search below is
+for the characters that could need it rather than for whether any do.  Latin-1
+is taken as covered: a default font without it is not one anybody types at.
+
+A character that already carries a `display' property is left alone -- that is
+a box glyph or a picture, and has been given its cell by other means -- and so
+is one in a cluster, since a property on part of an emoji sequence would stop
+the sequence composing into one glyph."
+  (save-excursion
+    (goto-char beg)
+    (while (re-search-forward "[^\0-ÿ]" end t)
+      (let* ((pos (1- (point)))
+             (char (char-after pos)))
+        (unless (or (get-text-property pos 'display)
+                    (eq (char-after (point)) #x200d)
+                    (eq (char-before pos) #x200d)
+                    ;; A combining mark or a variation selector, that is; the
+                    ;; newline ending the row is zero-width too and is not one.
+                    (let ((next (char-after (point))))
+                      (and next (> next 255) (zerop (char-width next)))))
+          (let ((fit (gethash char cooked--cell-fit-cache)))
+            (unless fit
+              (setq fit (puthash char
+                                 (save-match-data (cooked--measure-cell-fit char))
+                                 cooked--cell-fit-cache)))
+            (when (consp fit)
+              ;; A copy each time, and that matters: `min-width' applies to a
+              ;; run of text sharing one `eq' value, so two characters given
+              ;; the same list would be padded as one.
+              (put-text-property pos (point) 'display (copy-sequence fit)))))))))
+
+(defun cooked--cell-fit-p ()
+  "Whether this drain should fit fallback glyphs, with the cache made current."
+  (when (and cooked-fit-fallback-glyphs (display-graphic-p))
+    (let ((key (cons (face-font 'default) face-remapping-alist)))
+      (unless (equal key cooked--cell-fit-key)
+        (clrhash cooked--cell-fit-cache)
+        (clrhash cooked--cell-fit-fonts)
+        (setq cooked--cell-fit-key key)))
+    t))
+
 (defun cooked--render-rows (rows &optional alt)
   "Rewrite damaged ROWS, an alist of (INDEX . BLOCK).
 
@@ -2147,6 +2362,7 @@ which has no such seam at all."
         ;; Nil when the buffer is displayed nowhere, and then the guard is not
         ;; called at all: there is no layout for a row to disagree with, which is
         ;; the answer it would have reached per row anyway.
+        (fit (cooked--cell-fit-p))
         (layout (and cooked-rejoin-wrapped-lines (cooked--layout-window)))
         ;; And once per drain for the same reason, and out of the same window:
         ;; the guard's memo of which rows Emacs lays out on one line, together
@@ -2176,6 +2392,9 @@ which has no such seam at all."
           (setq last-row index
                 last-start start)
           (cooked--render-block block index)
+          ;; Before the guard, which measures the row as it will be drawn.
+          (when (and fit (not (nth 5 block)))
+            (cooked--fit-cells start (line-end-position)))
           ;; The block's own last two elements: how many cells the row occupies
           ;; on the grid, and whether every character of it takes one byte and
           ;; stands on one cell.  Both are by-products of the core building the
@@ -2269,7 +2488,7 @@ A pure query: it never extends the buffer, so it is safe to call before
 `inhibit-read-only' is in effect."
   (save-excursion
     (cooked--goto-screen-row (cooked-cursor-row cooked--cursor))
-    (min (+ (point) (cooked-cursor-col cooked--cursor)) (line-end-position))))
+    (car (cooked--forward-cells (cooked-cursor-col cooked--cursor)))))
 
 (defun cooked--anchor-position (anchor batch-start)
   "Buffer position ANCHOR names, or the cursor if it names nothing we can place.
@@ -2326,7 +2545,7 @@ at all."
 (defun cooked--goto-screen-cell (cell)
   "Move point to CELL, a (ROW . COL) pair, clamped to what the row holds."
   (cooked--goto-screen-row (car cell))
-  (forward-char (min (cdr cell) (- (line-end-position) (point)))))
+  (cooked--forward-cells (cdr cell)))
 
 (defun cooked--at-child-cursor-p ()
   "Whether point is sitting where the child's cursor is."
@@ -2853,6 +3072,38 @@ reusing a live one.  COMMAND overrides `cooked-shell'."
 NEW and COMMAND mean what they do there."
   (interactive "P")
   (cooked--open-session new command cooked-other-window-action))
+
+(declare-function cooked-mode "cooked-mode")
+(declare-function cooked--refresh-keymap "cooked-mode")
+
+;;;###autoload
+(defun cooked-exec (buffer program &optional args)
+  "Run PROGRAM with ARGS in a terminal in BUFFER, and return the buffer.
+
+BUFFER is a buffer or the name of one to create.  PROGRAM is run directly, in
+the buffer's `default-directory' and with the environment `process-environment'
+holds at the call, rather than through `cooked-shell': no shell is started and
+no shell integration is injected, because there is no shell for it to go into.
+
+The entry point for a program that is not a shell -- a tmux client attached to
+a session, an editor, a REPL -- and for Lisp that wants a terminal in a buffer
+it made and named itself.  The buffer is not displayed; that is the caller's to
+do, and the child is resized to whatever window it lands in.
+
+`get-buffer-process' answers for the buffer for as long as the child lives and
+not after, so that is the test for whether it is still running."
+  (require 'cooked-mode)
+  (let ((buffer (get-buffer-create buffer)))
+    (with-current-buffer buffer
+      (when cooked--session
+        (user-error "cooked: %s already has a session" (buffer-name)))
+      (let ((directory default-directory))
+        (unless (derived-mode-p 'cooked-mode)
+          (cooked-mode))
+        (setq default-directory directory)
+        (cooked--start (cons program args) directory))
+      (cooked--refresh-keymap))
+    buffer))
 
 (provide 'cooked)
 ;;; cooked.el ends here
