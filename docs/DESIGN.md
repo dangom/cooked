@@ -1429,3 +1429,81 @@ Compare interleaved against a worktree of the base commit, on a quiet machine, a
 alongside another benchmark run — a chunk of one session was spent chasing a 4%
 "regression" that was one benchmark loop contending with another. Run-to-run noise is
 2–3%, so treat anything under 5% as needing more runs rather than a bisect.
+
+---
+
+## Inline and fullscreen renderers, and why cooked chooses neither
+
+Agent CLIs commonly ship two renderers; the case studied here was Claude Code. Fullscreen
+(often the default in recent versions) is `CSI ? 1049 h` plus mouse modes 1000/1002/1003/1006: the
+program draws a rectangle on the alternate screen and keeps the conversation in its own
+memory, scrolling it itself on wheel reports. To cooked that is the same as `vim`: the
+buffer holds one screenful and the wheel is the child's. The classic renderer prints onto
+the main screen, where every finished message becomes scrollback -- ordinary buffer
+text -- and only the live region at the bottom is repainted.
+
+Measured on recorded sessions, both behave the same way through cooked: the program
+probes `CSI ? 2026 $ p`, cooked answers 2, and every frame then arrives inside
+`?2026 h ... ?2026 l`. Replayed through the spawned and the hosted session paths, 600-odd
+frames produced no row that changed and changed back and no row blanked and restored.
+
+cooked does not pick one. An environment variable would do it, but it is an internal knob
+of somebody else's program that can change meaning or disappear in any release, and it
+would silently override a choice the user made in that program's own settings. The
+choice stays in the program's own settings, and cooked-navigate.el works with whatever the
+terminal state says the program is doing.
+
+## `cooked--program-name`: argv, not `comm`
+
+Some installers run a file named for its version behind a symlink (e.g.
+`~/.local/share/agent/versions/2.1.0` behind `agent`), so the kernel's name for the
+process — what `process-attributes` reports as `comm` — is `2.1.0`, and every condition
+keyed on the program's name is dead for it, `cooked-key-protocol-overrides`' own default
+included. argv[0]'s basename is what the
+user typed, or what a wrapper exec'd, and is what a condition means. For a program run by
+an interpreter (`node .../cli.js`) argv[0] is the interpreter, so
+`cooked-navigable-programs` also matches against the whole command line.
+
+## cooked-navigate.el: decided by terminal state, never by the program
+
+Whether navigation applies is asked of nothing but the terminal: a live child owning the
+keyboard (`cooked--policy` `raw` or `command`), on the main screen, that has not asked for
+mouse reports. "The input" is the row the program's cursor is on. Nothing reads what the
+program draws -- no prompt glyph, no box, no status line -- and nothing is keyed on its
+name or version unless the user narrows `cooked-navigable-programs` to a list. So a new
+layout cannot break it: the worst a program can do is take the alternate screen or the
+mouse, and then navigation turns off and every key is the program's, which is what a
+terminal would do. A mouse-mode change refreshes the keymap for that reason
+(`cooked--set-mouse-state`).
+
+At the input every key is the program's except `cooked-navigation-keys`, by default
+`M-v` and `M-<`: the smallest set that gets out. An earlier version also took `C-v`,
+`C-s`, `C-r` and translated `C-p`/`C-n` to Up/Down; agent CLIs bind the first three
+themselves (image paste, stash, history search) and already treat `C-p`/`C-n` as Up/Down,
+so all of that was divergence from a terminal for nothing.
+
+## `cooked-navigate--reading`: a flag set by commands, not a position
+
+Whether the user is reading the output or typing at the input could be read off point —
+is it on the cursor's row? — and that is exactly the version that does not work. Output
+moves the cursor between commands, and until the next drain puts point back on it, point
+is "not at the input" without anyone having gone anywhere. Asked at that moment (which a
+`cooked--set-mode` inside the drain does), the answer flipped the buffer into `still`;
+`still` stops point following the cursor; so point never caught up, and the buffer stayed
+read-only with nobody having touched it. Only the user's own commands change the flag —
+from `post-command-hook`, comparing point and the window start with what they were
+before the command.
+
+**Scrolling up counts as leaving.** A wheel notch or two moves the window and not point,
+which stays on the input row, still visible. Left as "at the input", the next drain —
+a spinner repainting several times a second is enough — ran `cooked--pin-transcript-bottom`
+and scrolled the window straight back down. Treating any command that moved the start up
+as the start of reading puts the buffer in `still`, which is what stops the follow.
+Scrolling back down until the cursor and the buffer's end are both in view is the way
+back, as is typing; a recentre is excluded, because it moves the start without being
+about looking elsewhere.
+
+**RET while reading sends nothing.** `cooked-peek-map` forwards RET, which for a peek is
+right — the user stepped out of a program to look, and RET continues. Here the user is in
+the transcript of a conversation, and a RET that submitted whatever was half-typed in the
+prompt would be the worst reading of the key.

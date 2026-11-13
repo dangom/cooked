@@ -17,6 +17,13 @@
 (require 'ert)
 (require 'cl-lib)
 
+;; The suite reads what a child left behind after it exits -- the "[exited 0]"
+;; line, the mode line's status, the transcript -- so the buffer has to outlive
+;; the child, which is no longer the default.  The tests that are about killing
+;; it on exit bind the option themselves.
+(with-eval-after-load 'cooked-mode
+  (setq cooked-kill-buffer-on-exit nil))
+
 ;; Optional packages the suite tests against have to be found before the tests
 ;; that need them run, or `skip-unless' quietly turns a whole feature's coverage
 ;; off.  That is not hypothetical: the documented `emacs -Q --batch -L lisp -L

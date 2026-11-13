@@ -628,8 +628,21 @@ anonymous functions describes itself badly: \\[describe-key] on an overridden ke
 should name a command you can look up.")
 
 (defvar-local cooked--foreground-name nil
-  "Cached (PID . NAME) for the child's foreground process group.
+  "Cached (PID NAME . COMMAND-LINE) for the child's foreground process group.
 `process-attributes' is not free, and the pid is what says whether it is stale.")
+
+(defun cooked--foreground-attributes ()
+  "(NAME . COMMAND-LINE) of the child's foreground process group, or nil.
+Cached by pid in `cooked--foreground-name', so a hit costs a `tcgetpgrp' and
+nothing else."
+  (when-let* ((session (cooked--live-session))
+              (pid (cooked--foreground-pid session)))
+    (if (eq pid (car cooked--foreground-name))
+        (cdr cooked--foreground-name)
+      (let ((attributes (process-attributes pid)))
+        (cdr (setq cooked--foreground-name
+                   (cons pid (cons (cooked--program-name attributes)
+                                   (alist-get 'args attributes)))))))))
 
 (defun cooked--foreground-program ()
   "Name of the program in the child's foreground process group, or nil.
@@ -638,12 +651,31 @@ Not the session's own command: that is usually a shell, and what the user is
 looking at is whatever the shell put in the foreground.  So a `claude' typed at
 a cooked shell answers `claude' here, which is the case an override has to be
 able to name."
-  (when-let* ((session (cooked--live-session))
-              (pid (cooked--foreground-pid session)))
-    (if (eq pid (car cooked--foreground-name))
-        (cdr cooked--foreground-name)
-      (cdr (setq cooked--foreground-name
-                 (cons pid (alist-get 'comm (process-attributes pid))))))))
+  (car (cooked--foreground-attributes)))
+
+(defun cooked--foreground-command-line ()
+  "The whole command line of the child's foreground process, or nil.
+For a program run by an interpreter -- `node .../cli.js' -- the name is the
+interpreter's, and only the command line says what is being run."
+  (cdr (cooked--foreground-attributes)))
+
+(defun cooked--program-name (attributes)
+  "The name a user would call the process described by ATTRIBUTES.
+
+The basename of the first word of its command line -- argv[0], which is what
+was typed or what a wrapper exec'd -- and the kernel's own name for it only
+when there is no command line to read.  The kernel's name is the executable
+file's, which is the less useful of the two wherever they differ: a program
+installed as a versioned file behind a symlink reports the version, so
+`comm' can be \"2.1.0\" while argv[0] is \"agent\".  A login shell's leading
+dash is dropped."
+  (let* ((args (alist-get 'args attributes))
+         (first (and (stringp args)
+                     (car (split-string args "[ \t]+" t))))
+         (name (and first (file-name-nondirectory first))))
+    (if (and name (not (string-empty-p name)))
+        (string-remove-prefix "-" name)
+      (alist-get 'comm attributes))))
 
 (defvar-local cooked--foreground-label nil
   "Name of the program the child last had in the foreground, for the mode line.
@@ -1237,6 +1269,11 @@ on wearing an overlay that is no longer in the cache."
     (define-key map [remap self-insert-command] #'cooked--peek-resume-and-send)
     (define-key map (kbd "RET") #'cooked--peek-resume-and-send)
     (define-key map (kbd "<return>") #'cooked--peek-resume-and-send)
+    ;; Rubbing out and yanking are typing too: in a read-only buffer the first
+    ;; would only say so, and the second has nowhere else to go.
+    (define-key map [remap delete-backward-char] #'cooked--peek-resume-and-send)
+    (define-key map [remap backward-delete-char-untabify] #'cooked--peek-resume-and-send)
+    (define-key map [remap yank] #'cooked-paste)
     map)
   "Keymap while forwarding is suspended, in `still' or `frozen'.
 

@@ -1,0 +1,278 @@
+;;; cooked-tests-navigate.el --- Navigation over a running program, and closing -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; cooked-navigate.el, the foreground program's
+;; name, and `cooked-close'.  Driven through `execute-kbd-macro' with the buffer
+;; in the selected window, so that the keymaps and the command hooks are the
+;; ones a key press really goes through.
+
+;;; Code:
+
+(require 'cooked-tests-helpers)
+(require 'cooked)
+(require 'cooked-mode)
+(require 'cooked-navigate)
+
+(defconst cooked-tests--echo-program
+  (concat "import os, sys, tty\n"
+          "tty.setraw(0)\n"
+          "out = sys.stdout\n"
+          "for i in range(1, 61):\n"
+          "    out.write('line %d\\r\\n' % i)\n"
+          "out.write('> ')\n"
+          "out.flush()\n"
+          "while True:\n"
+          "    b = os.read(0, 64)\n"
+          "    if not b:\n"
+          "        break\n"
+          "    if b == b'A':\n"
+          "        out.write('\\x1b[?1049h')\n"
+          "    if b == b'M':\n"
+          "        out.write('\\x1b[?1000h\\x1b[?1006h')\n"
+          "    out.write(repr(b) + ' ')\n"
+          "    out.flush()\n")
+  "A program that owns the keyboard on the main screen and says what it is sent.
+
+Nothing like a real agent but the shape: output scrolling up the main screen, and
+an input on the cursor's row.  Sent an `A' it takes the alternate screen, and
+sent an `M' it asks for mouse reports, the two ways a program says it will
+look after its own scrolling.")
+
+(defmacro cooked-tests--with-navigable (&rest body)
+  "Run BODY in the selected window, on a program that echoes its input.
+With `cooked-navigable-programs' at its default: nothing names this program."
+  (declare (indent 0))
+  `(progn
+     (cooked-tests--with-session
+         (list "python3" "-I" "-c" cooked-tests--echo-program)
+       (switch-to-buffer (current-buffer))
+       (should (cooked-tests--settle
+                (lambda () (string-match-p "line 60\n>" (cooked-tests--text)))))
+       (should (cooked-tests--settle (lambda () (eq (cooked--policy) 'raw))))
+       (cooked--refresh-keymap)
+       (should cooked-navigate--applies)
+       ,@body)))
+
+(defun cooked-tests--keys (keys)
+  "Press KEYS, then let the child answer."
+  (execute-kbd-macro (kbd keys))
+  (cooked-tests--settle (lambda () nil) 0.3))
+
+(ert-deftest cooked-navigate-keys-go-to-the-program-at-its-input ()
+  "At the input every key is the program's, as in a terminal: `C-p', `C-s' and
+`C-r' included."
+  (cooked-tests--with-navigable
+    (should-not cooked-navigate--reading)
+    (cooked-tests--keys "a")
+    (should (string-match-p "b'a'" (cooked-tests--text)))
+    (cooked-tests--keys "C-p")
+    (should (string-match-p (regexp-quote "b'\\x10'") (cooked-tests--text)))
+    (cooked-tests--keys "C-s")
+    (should (string-match-p (regexp-quote "b'\\x13'") (cooked-tests--text)))
+    (cooked-tests--keys "C-r")
+    (should (string-match-p (regexp-quote "b'\\x12'") (cooked-tests--text)))
+    (should-not cooked-navigate--reading)))
+
+(ert-deftest cooked-navigate-emacs-motion-leaves-the-input-to-read ()
+  "\\`M-<' is Emacs' even at the input, and leaves it: the buffer is then an
+ordinary read-only one, `C-n' is line motion, and nothing reaches the program."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (should (= (point) (point-min)))
+    (should cooked-navigate--reading)
+    (should (eq cooked--input-mode 'still))
+    (should buffer-read-only)
+    (cooked-tests--keys "C-n")
+    (should (= (line-number-at-pos) 2))
+    (should-not (string-match-p "b'" (cooked-tests--text)))))
+
+(ert-deftest cooked-navigate-typing-while-reading-goes-back-to-the-input ()
+  "A character typed while reading lands in the program's input, like comint."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (should cooked-navigate--reading)
+    (cooked-tests--keys "z")
+    (should (string-match-p "b'z'" (cooked-tests--text)))
+    (should-not cooked-navigate--reading)
+    (should-not buffer-read-only)
+    (should (= (point) (cooked--cursor-position)))))
+
+(ert-deftest cooked-navigate-return-while-reading-sends-nothing ()
+  "RET while reading goes back to the input and does not submit anything."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (cooked-tests--keys "RET")
+    (should-not cooked-navigate--reading)
+    (should (= (point) (cooked--cursor-position)))
+    (should-not (string-match-p (regexp-quote "b'\\r'") (cooked-tests--text)))))
+
+(ert-deftest cooked-navigate-moving-onto-the-input-row-goes-back ()
+  "Line motion from the output onto the input row hands the keys back."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (cooked-tests--keys "C-s line SPC 60 RET")
+    (should cooked-navigate--reading)
+    (cooked-tests--keys "C-n")
+    (should-not cooked-navigate--reading)
+    (should (= (point) (cooked--cursor-position)))))
+
+(ert-deftest cooked-navigate-output-does-not-move-point-while-reading ()
+  "The program keeps drawing while its output is read, and point stays put."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (cooked-tests--keys "C-n C-n")
+    (let ((line (line-number-at-pos)))
+      ;; Output the user did not type: the echo of a key sent from Lisp.
+      (cooked--send cooked--session "q")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "b'q'" (cooked-tests--text)))))
+      (should (= (line-number-at-pos) line))
+      (should cooked-navigate--reading))))
+
+(ert-deftest cooked-navigate-leaves-unnamed-programs-alone ()
+  "A list in `cooked-navigable-programs' that does not name the program leaves
+every key with it."
+  (let ((cooked-navigable-programs '("\\`no-such-program\\'")))
+    (cooked-tests--with-session
+        (list "python3" "-I" "-c" cooked-tests--echo-program)
+      (switch-to-buffer (current-buffer))
+      (should (cooked-tests--settle (lambda () (eq (cooked--policy) 'raw))))
+      (cooked--refresh-keymap)
+      (should-not cooked-navigate--applies)
+      (should-not (eq (key-binding (kbd "M-<")) #'beginning-of-buffer))
+      (let ((before (point)))
+        (cooked-tests--keys "M-<")
+        (should (= (point) before)))
+      (should-not cooked-navigate--reading))))
+
+(ert-deftest cooked-navigate-list-matches-the-command-line ()
+  "A program run by an interpreter is named by its command line."
+  (let ((cooked-navigable-programs '("tty\\.setraw")))
+    (cooked-tests--with-session
+        (list "python3" "-I" "-c" cooked-tests--echo-program)
+      (should (cooked-tests--settle (lambda () (eq (cooked--policy) 'raw))))
+      (cooked--refresh-keymap)
+      (should cooked-navigate--applies))))
+
+(ert-deftest cooked-navigate-turns-off-on-the-alternate-screen ()
+  "A program that takes the alternate screen while its output is being read
+gets every key back, and the buffer is not left read-only."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (should cooked-navigate--reading)
+    (should buffer-read-only)
+    (cooked--send cooked--session "A")
+    (should (cooked-tests--settle (lambda () cooked--alt)))
+    (should-not cooked-navigate--applies)
+    (should-not cooked-navigate--reading)
+    (should-not buffer-read-only)
+    (should-not (eq cooked--input-mode 'still))
+    (should-not (eq (key-binding (kbd "M-<")) #'beginning-of-buffer))
+    (cooked-tests--keys "x")
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "b'x'" (cooked-tests--text)))))))
+
+(ert-deftest cooked-navigate-turns-off-when-the-program-asks-for-the-mouse ()
+  "Mouse reports mean the program scrolls itself: its keys are its own again."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (should cooked-navigate--reading)
+    (cooked--send cooked--session "M")
+    (should (cooked-tests--settle
+             (lambda () (cooked-mouse-state-enabled cooked--mouse-state))))
+    (should-not cooked-navigate--applies)
+    (should-not cooked-navigate--reading)
+    (should-not buffer-read-only)))
+
+(ert-deftest cooked-navigate-is-off-at-a-marked-shell-prompt ()
+  "A shell editing its own marked prompt is Emacs' line, not a program's."
+  (cooked-tests--with-zsh
+    (should (cooked-tests--settle (lambda () (cooked--input-state-p))))
+    (cooked--refresh-keymap)
+    (should-not cooked-navigate--applies)))
+
+(ert-deftest cooked-program-name-is-argv-zero ()
+  "argv[0]'s basename: what was typed, or what a wrapper exec'd."
+  ;; The native installer: a versioned file behind an `agent' symlink.
+  (should (equal (cooked--program-name '((comm . "2.1.0")
+                                         (args . "agent --resume abc")))
+                 "agent"))
+  (should (equal (cooked--program-name '((comm . "2.1.0")
+                                         (args . "/home/u/.local/bin/agent")))
+                 "agent"))
+  ;; Run by an interpreter: the interpreter is the name ...
+  (should (equal (cooked--program-name
+                  '((comm . "node")
+                    (args . "node /usr/lib/node_modules/some-agent/cli.js")))
+                 "node"))
+  (should (equal (cooked--program-name '((comm . "zsh") (args . "-zsh"))) "zsh"))
+  (should (equal (cooked--program-name '((comm . "cat"))) "cat")))
+
+(ert-deftest cooked-navigate-names-an-interpreted-program-by-command-line ()
+  "... and the command line is what a list entry can name it by."
+  (let ((cooked-navigable-programs '("agent")))
+    (cl-letf (((symbol-function 'cooked--foreground-attributes)
+               (lambda ()
+                 '("node" . "node /usr/lib/node_modules/some-agent/cli.js"))))
+      (should (cooked-navigate--program-p))))
+  (let ((cooked-navigable-programs '("agent")))
+    (cl-letf (((symbol-function 'cooked--foreground-attributes)
+               (lambda () '("node" . "node server.js"))))
+      (should-not (cooked-navigate--program-p)))))
+
+(ert-deftest cooked-buffer-closes-on-a-clean-exit-by-default ()
+  "The shipped default, which the suite itself overrides to read transcripts."
+  (should (eq (eval (car (get 'cooked-kill-buffer-on-exit 'standard-value)) t)
+              'on-success)))
+
+(ert-deftest cooked-close-hangs-up-and-takes-the-buffer ()
+  "`cooked-close' hangs up on the child, waits for it, and kills the buffer."
+  (let* ((flag (make-temp-file "cooked-close"))
+         (buffer (generate-new-buffer "*cooked-close*"))
+         (cooked-close-grace 3))
+    (delete-file flag)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (cooked-mode)
+            (cooked--start
+             (list "/bin/sh" "-c"
+                   (format "trap 'echo hup > %s; exit 0' HUP; while :; do sleep 0.05; done"
+                           (shell-quote-argument flag))))
+            (cooked--refresh-keymap)
+            (cooked-tests--settle (lambda () nil) 0.3)
+            (cooked-close))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (buffer-live-p buffer) (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (should-not (buffer-live-p buffer))
+          (should (file-exists-p flag)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (cooked--cleanup))
+        (kill-buffer buffer))
+      (ignore-errors (delete-file flag)))))
+
+(ert-deftest cooked-exit-puts-away-a-window-made-for-the-buffer ()
+  "A buffer killed on exit takes with it the window that was made to show it."
+  (let ((cooked-kill-buffer-on-exit t)
+        (buffer (generate-new-buffer "*cooked-exit-window*")))
+    (delete-other-windows)
+    (unwind-protect
+        (let (window)
+          (with-current-buffer buffer
+            (cooked-mode)
+            (cooked--start '("/bin/sh" "-c" "sleep 0.3; exit 0")))
+          (setq window (display-buffer buffer '(display-buffer-pop-up-window)))
+          (should (window-live-p window))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (buffer-live-p buffer) (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (should-not (buffer-live-p buffer))
+          (should-not (window-live-p window)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (cooked--cleanup))
+        (kill-buffer buffer)))))
+
+(provide 'cooked-tests-navigate)
+;;; cooked-tests-navigate.el ends here

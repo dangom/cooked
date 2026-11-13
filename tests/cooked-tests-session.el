@@ -324,8 +324,9 @@ a foreign handle would be reinterpreted as a session."
     (should (cooked-tests--settle
              (lambda () (string-match-p "\\[exited 9\\]" (cooked-tests--text)))))))
 
-(ert-deftest cooked-buffer-is-kept-on-exit-by-default ()
-  (should-not (cooked-tests--run-until-dead '("/bin/sh" "-c" "exit 0") 1)))
+(ert-deftest cooked-buffer-is-kept-on-exit-when-asked ()
+  (let ((cooked-kill-buffer-on-exit nil))
+    (should-not (cooked-tests--run-until-dead '("/bin/sh" "-c" "exit 0") 1))))
 
 (ert-deftest cooked-buffer-can-close-itself-on-exit ()
   (let ((cooked-kill-buffer-on-exit t))

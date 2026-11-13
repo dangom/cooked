@@ -31,6 +31,7 @@
 (require 'cooked-render)
 (require 'cooked-scrollback)
 (require 'cooked-keys)
+(require 'cooked-navigate)
 (require 'cooked-completion)
 (require 'cooked-mouse)
 (require 'cooked-shell-integration)
@@ -237,7 +238,13 @@ nothing is drained, so a redraw cannot be what discovers that point has moved."
 Typing is the moment the keyboard goes back, so it is the moment to stop
 pretending point is anywhere else — the child will act at its own cursor
 whatever Emacs is showing, and the ghost has been marking that spot."
-  (when (and cooked--wandered (cooked--child-owns-keyboard-p))
+  ;; Whatever was being read, a key sent is the end of reading it -- and point
+  ;; may be up in the scrollback, where it has no screen cell to have wandered
+  ;; from, so reading has to count as having wandered.
+  (when (and (or (prog1 cooked-navigate--reading
+                   (setq cooked-navigate--reading nil))
+                 cooked--wandered)
+             (cooked--child-owns-keyboard-p))
     (goto-char (cooked--cursor-position))
     (setq cooked--wandered nil)
     (cooked--update-ghost-cursor)))
@@ -963,6 +970,7 @@ are the ones left standing."
     (unless (cooked--input-state-p)
       (cooked--clear-input-region))
     (cooked--update-mouse-grab)
+    (cooked-navigate--update-maps)
     ;; Here rather than on a drain: this asks what the child is running, and a
     ;; program starting or exiting is exactly what moves the policy that brought
     ;; us here.
@@ -1416,14 +1424,21 @@ assumption on startup is that it has focus, and telling it so again is noise.")
 
 ;;;; What happens when the child exits
 
-(defcustom cooked-kill-buffer-on-exit nil
+(defcustom cooked-kill-buffer-on-exit 'on-success
   "Whether the session buffer is killed when the child exits.
 
-nil keeps the buffer, exit status and all, which is the point of running the
-terminal inside Emacs: the transcript outlives the command.  t kills it,
-`on-success' kills it only for a zero status — the shell-in-a-window habit,
-where a failure is the one case you still want to read.  A function is called
-with the exit code and kills the buffer when it returns non-nil.
+`on-success', the default, kills it for a zero status and keeps it otherwise:
+`exit' at a shell, or \\`/exit' in an agent's chat, closes the buffer the way it
+would close a terminal window, while a program that crashed or failed leaves
+its last words on screen to be read.  nil always keeps the buffer, exit status
+and all, so that the transcript outlives the command.  t always kills it.  A
+function is called with the exit code and kills the buffer when it returns
+non-nil.
+
+A killed buffer takes its windows with it as `quit-restore-window' would: one
+made to show the terminal is deleted, one that showed something else before
+shows that again.  See `cooked--dismiss'.  \\[cooked-close] ends a session and
+closes its buffer whatever this says.
 
 The buffer is killed from a timer rather than mid-redraw, so `kill-buffer-hook'
 and anything watching the buffer list see an ordinary kill."
@@ -1435,11 +1450,103 @@ and anything watching the buffer list see an ordinary kill."
 
 (defun cooked--kill-buffer-on-exit-p (code)
   "Whether `cooked-kill-buffer-on-exit' wants the buffer killed for CODE."
-  (pcase cooked-kill-buffer-on-exit
-    ('nil nil)
-    ('on-success (eql code 0))
-    ((and (pred functionp) f) (funcall f code))
-    (_ t)))
+  (or cooked--closing
+      (pcase cooked-kill-buffer-on-exit
+        ('nil nil)
+        ('on-success (eql code 0))
+        ((and (pred functionp) f) (funcall f code))
+        (_ t))))
+
+(defun cooked--dismiss (buffer)
+  "Kill BUFFER, and put away each window that was showing it.
+
+`quit-restore-window' rather than leaving the windows to whatever
+`kill-buffer' replaces BUFFER with: a window that was made to show this
+terminal is deleted along with it, and one that was showing something else
+before goes back to that -- which is what \\`q' does to a help window, and
+what closing a buffer that is done with should look like everywhere."
+  (when (buffer-live-p buffer)
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (when (and (window-live-p window) (eq (window-buffer window) buffer))
+        (quit-restore-window window 'bury)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
+
+;;;; Closing: ending the session and the buffer together
+
+(defcustom cooked-close-grace 3
+  "Seconds `cooked-close' gives a program to finish before ending it outright.
+
+Hanging up is a request, and a program that saves its state on the way out --
+an agent writes its conversation, a shell its history -- is entitled to the
+time to do it.  Past this, the session is ended whatever it is doing."
+  :type 'number
+  :group 'cooked)
+
+(defvar-local cooked--closing nil
+  "Non-nil once `cooked-close' has asked this buffer's session to end.
+The buffer goes when the session does, whatever its exit status.")
+
+(defvar cooked-host-name)
+(declare-function cooked-host-kill "cooked-host" (name))
+
+(defun cooked--end-session ()
+  "End this buffer's session now: the host's, for a hosted one."
+  (if (and (bound-and-true-p cooked-host-name)
+           (fboundp 'cooked-host-kill))
+      (cooked-host-kill cooked-host-name)
+    (cooked--stop-session)))
+
+(defun cooked--close-step (buffer deadline)
+  "Check on BUFFER's closing, ending it outright once DEADLINE has passed."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let* ((session (cooked--live-session))
+             (foreground (and session (ignore-errors (cooked--foreground-pid session))))
+             (leader (and session (ignore-errors (cooked--pid session)))))
+        (cond
+         ((null session) (cooked--dismiss buffer))
+         ;; The program has gone and left its shell behind, or the time is up.
+         ((or (> (float-time) deadline)
+              (and foreground leader (eql foreground leader)
+                   (not (eq cooked--closing 'leader))))
+          (cooked--end-session)
+          (run-at-time 0.1 nil #'cooked--close-step buffer
+                       (+ (float-time) cooked-close-grace)))
+         (t (run-at-time 0.1 nil #'cooked--close-step buffer deadline)))))))
+
+(defun cooked-close ()
+  "End this buffer's program as closing its terminal would, and the buffer.
+
+The program in the foreground is hung up on -- SIGHUP, which is what a terminal
+window closing sends, and which agents, shells and editors all treat as
+the cue to save and leave rather than as a crash.  When it has gone the rest
+of the session is ended too: the shell it was typed at, or, for a session kept
+by `cooked-host', the hosted session itself, which is what makes this the
+opposite of \\[cooked-host-detach] rather than the same thing.  Then the buffer
+is killed and its windows put away as `cooked--dismiss' does.
+
+A program still running after `cooked-close-grace' seconds is ended outright."
+  (interactive)
+  (let ((buffer (current-buffer))
+        (session (cooked--live-session)))
+    (cond
+     ((null session) (cooked--dismiss buffer))
+     ((not (or (not (called-interactively-p 'interactive))
+               (y-or-n-p (format "End %s and close this buffer? "
+                                 (or (ignore-errors (cooked--foreground-program))
+                                     "the session"))))))
+     (t
+      (cooked--resume-forwarding)
+      (let* ((foreground (ignore-errors (cooked--foreground-pid session)))
+             (leader (ignore-errors (cooked--pid session))))
+        ;; At a shell's own prompt there is no program in front of it to hang up
+        ;; on first, and the shell is what gets the signal.
+        (setq cooked--closing (if (and foreground leader (eql foreground leader))
+                                  'leader
+                                t))
+        (ignore-errors (cooked--signal session 'SIGHUP))
+        (cooked--close-step buffer (+ (float-time) cooked-close-grace)))))))
 
 (defun cooked--stop-session ()
   "Kill the child and close the wake pipe, leaving the buffer sessionless.
@@ -1512,7 +1619,7 @@ kill the buffer, start something in it -- has to defer that.")
   ;; halfway through a redraw.
   (when (cooked--kill-buffer-on-exit-p code)
     (let ((buffer (current-buffer)))
-      (run-at-time 0 nil (lambda () (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+      (run-at-time 0 nil #'cooked--dismiss buffer))))
 
 ;;;; Where the rest of Emacs goes looking for structure
 ;;
@@ -1936,6 +2043,10 @@ to the child verbatim."
   ;; no output, so a drain is never what discovers that one of them scrolled the
   ;; alt screen out of the window.
   (add-hook 'post-command-hook #'cooked--pin-alt-windows nil t)
+  ;; After `cooked--track-wandering', which it reads: whether point is in the
+  ;; child's input decides whose the keys are.  See cooked-navigate.el.
+  (add-hook 'pre-command-hook #'cooked-navigate--pre-command nil t)
+  (add-hook 'post-command-hook #'cooked-navigate--post-command 50 t)
   (add-hook 'completion-at-point-functions #'cooked-completion-at-point nil t)
   ;; comint's own completion asks a process that is not the child.  Removed rather
   ;; than left sitting behind ours as a fallback that can only ever be wrong.
@@ -1978,6 +2089,9 @@ to the child verbatim."
 (define-key cooked-mode-map (kbd "C-c C-n") #'cooked-next-command)
 (define-key cooked-mode-map (kbd "C-c TAB") #'cooked-toggle-fold)
 (define-key cooked-mode-map (kbd "C-c C-l") #'cooked-refresh)
+;; `k' for kill, as in `kill-buffer': this ends the session and the buffer
+;; together, where killing the buffer of a hosted session only lets go of it.
+(define-key cooked-mode-map (kbd "C-c C-k") #'cooked-close)
 ;; Reads the way \\`M->' does for the end of a buffer, and for the same reason:
 ;; the newest command is the one end of the transcript that keeps moving.  It had
 ;; no key at all until now -- only the mode line's exit status was a click away

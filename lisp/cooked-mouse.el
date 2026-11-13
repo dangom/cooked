@@ -198,6 +198,8 @@ reader.")
 (defvar-local cooked--mouse-state cooked--mouse-state-none
   "What the child last asked for about the mouse; see `cooked-mouse-state'.")
 
+(declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
+
 (defun cooked--set-mouse-state (enabled sgr drag motion)
   "Adopt ENABLED, SGR, DRAG and MOTION, and re-gate the keymap.
 
@@ -207,8 +209,15 @@ Called from `cooked--handle-event\=', which is in cooked-render.el and requires
 this file, so the call is an ordinary one -- but it is still a notification that
 something changed rather than a question asked upward, which is why the state
 and the keymap it gates both live on this side of it."
-  (setq cooked--mouse-state (cooked--mouse-state-make
-                             :enabled enabled :sgr sgr :drag drag :motion motion))
+  (let ((was (cooked-mouse-state-enabled cooked--mouse-state)))
+    (setq cooked--mouse-state (cooked--mouse-state-make
+                               :enabled enabled :sgr sgr :drag drag :motion motion))
+    ;; Whether the child scrolls itself is one of the things cooked-navigate.el
+    ;; decides by, and nothing else would tell it the answer changed.
+    (when (and (not (eq (and was t) (and enabled t)))
+               cooked--session
+               (fboundp 'cooked--refresh-keymap))
+      (cooked--refresh-keymap t)))
   ;; The keymap that outranks `pixel-scroll-precision-mode' is gated on this, so
   ;; it has to move when the child changes its mind about the mouse.
   (cooked--update-mouse-grab))

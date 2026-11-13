@@ -183,6 +183,12 @@ and moves you between them itself:
   - =C-c TAB=: fold a command's output to one line.
   - =C-c C-q=: send the next key exactly as typed, even =C-c= itself.
   - =C-c M-x=: run whatever you have =M-x= bound to — the way out, whatever the child is doing.
+  - =C-c C-k=: end the session and close its buffer — the program is hung up on, as closing
+    a terminal window does, and for a hosted session the session itself ends.
+
+- A program that exits cleanly takes its buffer with it (=exit= at a shell, =/exit= in
+  an agent's chat), and a window made to show it goes too; one that fails leaves its last words
+  on screen. See ~cooked-kill-buffer-on-exit~.
 
 - A password prompt (=getpass=, no echo) is its own case: cooked asks in the minibuffer
   instead, so ~cooked-password-function~ can answer it from auth-source or =pass=.
@@ -338,6 +344,40 @@ xterm's. =M-x cooked-install-terminfo-remote= gets it onto a host you =ssh= into
 *Not implemented.* Pointer motion with no button held (mode 1003's other half), and
 vttest-level conformance beyond the common paths — vim, htop, tmux and less all work,
 the long tail is untested. Full list in [[file:docs/ROADMAP.md][docs/ROADMAP.md]].
+
+* Reading a program's output while it runs
+
+A program that reads every key raw but prints onto the main screen — an agent's chat, a REPL —
+leaves what it prints in the buffer as ordinary text, and cooked lets you read it with
+Emacs' own commands while the program keeps running. Nothing about this is specific to
+any program: it is decided from the terminal's state, and applies whenever a program owns
+the keyboard on the main screen and has not asked for the mouse.
+
+Where point is decides who a key is for:
+
+- *On the program's input* — the row its cursor is on — every key is the program's, as in
+  any terminal, except =M-v= and =M-<=, which take you out into the output (see
+  ~cooked-navigation-keys~). A click or the mouse wheel does the same.
+- *Anywhere else*, it is an ordinary read-only Emacs buffer: motion, isearch, the region,
+  =M-w=, all of it, while the output keeps arriving underneath without moving the view.
+  Scrolling up away from the input counts as leaving it.
+- *Coming back*: type, and the key goes to the program's input, as comint and eshell send
+  you back to the prompt; =RET= just goes back; so does moving onto the input row, or
+  scrolling down until it is in view.
+
+The moment the program takes the alternate screen or asks for the mouse, all of this
+switches off and every key is the program's again. ~cooked-navigable-programs~ can narrow
+it to named programs, or turn it off.
+
+The program is left entirely to itself: cooked sets nothing in its environment, so its
+settings, memory and updates behave exactly as in any terminal. Many agent CLIs offer
+both an inline renderer and a fullscreen one, chosen in their own settings:
+
+- An *inline* renderer prints the conversation onto the main screen, so the whole
+  conversation becomes buffer text you can scroll, search and copy as above.
+- A *fullscreen* renderer keeps the conversation inside the program, on the alternate
+  screen with the mouse captured: Emacs shows one screenful, and the program scrolls it
+  itself — as it does in any terminal.
 
 * tmux, and other programs that are not a shell
 
