@@ -188,6 +188,28 @@ own ~/.zshenv — where PATH and friends usually live — was never read."
         (should-not (string-match-p (concat "zdot=" (regexp-quote cooked--scratch))
                                     (cooked-tests--text)))))))
 
+(ert-deftest cooked-zsh-history-file-is-not-in-the-scratch-directory ()
+  "Regression: a system zshrc runs before ours with ZDOTDIR naming the scratch
+directory, and macOS\='s sets HISTFILE from it -- so the shell came up with none
+of the user\='s history and wrote its own into a file deleted with the buffer."
+  (skip-unless (executable-find "zsh"))
+  (cooked-tests--with-fake-zdotdir '((".zshrc" . "PROMPT='$ '\n"))
+    (cooked-tests--with-shell ("zsh" :name "*cooked-histfile*"
+                               :settle (lambda () (eq cooked--semantic 'input)))
+      (cooked--send cooked--session "echo \"hist=[$HISTFILE]\"\r")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "^hist=\\[" (cooked-tests--text)))))
+      ;; Joined, because a temporary directory's name is long enough to wrap.
+      (let ((text (string-replace "\n" "" (cooked-tests--text))))
+        (should-not (string-match-p (regexp-quote cooked--scratch) text))
+        ;; Where a system file named one at all, it is the user\='s.
+        (should (string-match-p
+                 (concat "hist=\\[\\("
+                         (regexp-quote (expand-file-name ".zsh_history"
+                                                         (getenv "ZDOTDIR")))
+                         "\\)?\\]")
+                 text))))))
+
 (ert-deftest cooked-zsh-survives-a-theme-that-rebuilds-the-prompt ()
   "Regression: the 133;B mark was appended to PS1 once at source time, so any
 theme rebuilding PS1 from its own precmd dropped it — and with it the whole

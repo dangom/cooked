@@ -25,6 +25,20 @@
 COOKED_INTEGRATION_LOADED=1
 [[ -o interactive ]] || return
 
+# Aliases off for the rest of the file, and back on at the end if they were on.
+#
+# zsh expands aliases as it *parses*, and a global alias expands wherever its
+# name stands as a word of its own -- a `case' pattern included.  `alias -g
+# P='2>&1 | pager'' is a common thing to have, and with it the `P)' arm further
+# down read as a redirection and the whole file failed to parse.  `emulate -L
+# -o no_aliases' inside a function is too late for this: by the time it runs the
+# body has long been parsed.  A sourced file is read a command at a time, so
+# the option set here governs everything below it.  Quoted, so that these lines
+# are not themselves at the mercy of what they guard against.
+'builtin' 'typeset' '-g' '__cooked_core_aliases='
+[[ -o aliases ]] && __cooked_core_aliases=1
+'builtin' 'setopt' 'no_aliases'
+
 autoload -Uz add-zsh-hook
 
 # A writable file descriptor onto the terminal, so that a mark still reaches it from a
@@ -519,3 +533,7 @@ __cooked_deferred_init() {
   return 0
 }
 add-zsh-hook precmd __cooked_deferred_init
+
+# Parsing is over; give alias expansion back if it was on.  See the top.
+[[ -n $__cooked_core_aliases ]] && 'builtin' 'setopt' 'aliases'
+'builtin' 'unset' '__cooked_core_aliases'

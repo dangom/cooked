@@ -59,6 +59,8 @@
 (declare-function cooked-previous-input "cooked-mode")
 (declare-function cooked-next-input "cooked-mode")
 (declare-function cooked-beginning-of-line "cooked-mode")
+(declare-function cooked-end-of-buffer "cooked-mode")
+(declare-function cooked-recenter-top-bottom "cooked-mode")
 
 ;;;; Key encoding
 
@@ -1291,6 +1293,12 @@ than to `completion-at-point\='."
     ;; the child is being forwarded through -- `C-a' there is readline's own
     ;; start-of-line, or tmux's prefix, and it must arrive untouched.
     (define-key map [remap move-beginning-of-line] #'cooked-beginning-of-line)
+    ;; Likewise for the end of the buffer, which below the prompt is the blank
+    ;; rows of a screen nothing has been written to yet.
+    (define-key map [remap end-of-buffer] #'cooked-end-of-buffer)
+    ;; And for the recentring cycle, whose "top" would otherwise put the row
+    ;; being typed on first and scroll the rest of a multi-line prompt away.
+    (define-key map [remap recenter-top-bottom] #'cooked-recenter-top-bottom)
     ;; Last, so a delegated key wins over the binding it replaces -- which is the
     ;; point of naming it.
     (dolist (key delegated)

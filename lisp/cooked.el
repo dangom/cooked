@@ -522,11 +522,13 @@ a send: once the line is in the pty, the shell is echoing it and editing it, so
 Emacs going on believing it owns an input region would render the line twice and
 edit a copy the child will never see.
 
-Cleared where the line ends -- a command starting or a fresh prompt -- so it
-lasts exactly as long as the line it was about.  There is no way back before
-then, and that is the honest cost: ZLE is still a line editor, so `C-a\=',
-`C-w\=' and the arrows all still work, but they are the shell\='s now.  It is
-vterm\='s ordinary state, entered on purpose and for one line.")
+Cleared where the line ends -- a command starting, or the `D\=' the shell
+prints before its next prompt -- so it lasts exactly as long as the line it
+was about.  Not at a prompt mark, which a redraw of the same line repeats.
+There is no way back before then, and that is the honest cost: ZLE is still
+a line editor, so `C-a\=', `C-w\=' and the arrows all still work, but they
+are the shell\='s now.  It is vterm\='s ordinary state, entered on purpose
+and for one line.")
 (defvar-local cooked--completion-nonce nil
   "Nonce from the prompt\='s OSC 51;CH announcement, or nil if it did not announce.
 
@@ -964,8 +966,9 @@ older three-element shape."
   (pcase event
     (`(prompt-start ,at . ,id)
      (setq cooked--semantic 'prompt
-           ;; A fresh prompt is a fresh line, and Emacs may have it back.
-           cooked--delegated nil
+           ;; Not `cooked--delegated': this mark rides in the prompt text, so it
+           ;; arrives again at every redraw of the same line -- see the
+           ;; `command-end' arm, which is where a line is known to be over.
            ;; Where the prompt is about to be drawn, which is what
            ;; `cooked-previous-command' moves between and where the outer half of
            ;; an `evil' command text object starts.  The mark arrives before the
@@ -981,8 +984,6 @@ older three-element shape."
     ;; the continuation line exactly as it owns the first one.
     (`(prompt-continuation ,_ . ,_)
      (setq cooked--semantic 'prompt
-           ;; A fresh line, whoever it continues, and Emacs may have it back.
-           cooked--delegated nil
            cooked--prompt-continued t))
     (`(prompt-end ,_ . ,_)
      (setq cooked--semantic 'input)
@@ -1044,7 +1045,19 @@ older three-element shape."
                              (cooked--running-anchor)))
        (cooked--refresh-keymap)))
     (`(command-end ,code ,at . ,id)
-     (setq cooked--semantic nil)
+     (setq cooked--semantic nil
+           ;; The line is over, and Emacs may have the next one back.  Here and
+           ;; at `command-start', and deliberately not at `prompt-start', which
+           ;; is where this used to be: the prompt marks are part of the prompt
+           ;; and so are written again by every `zle reset-prompt' -- which is
+           ;; how a history widget finishes, fzf's \`C-r' among them.  That
+           ;; redraw was read as a fresh line, so Emacs took back a line whose
+           ;; text was still in the shell's editor: the recalled command sat on
+           ;; screen as prompt, read-only, with an empty input region after it.
+           ;; A `D' is printed from precmd and never from inside the line
+           ;; editor, so it is there for every line that really ended -- a
+           ;; command, an empty Return, an interrupt -- and for no redraw.
+           cooked--delegated nil)
      (cooked--mark-command-end code (cooked--register-mark (car id) at batch-start)))))
 
 ;;;; Locating a cell in the buffer

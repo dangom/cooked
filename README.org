@@ -164,6 +164,8 @@ and moves you between them itself:
   - =TAB=: ~completion-at-point~ — your shell's own completion, if ~cooked-shell-completion~ is loaded.
   - =M-p= / =M-n=: previous/next input, like Comint.
   - =C-a=: first non-blank column, then column 0 on a second press.
+  - =M->=: the end of the line being typed, then the end of the buffer on a second press.
+  - =C-l=: Emacs' own recentring cycle; its "top" keeps a multi-line prompt whole.
   - =C-d=: delete a character, or send EOF on an empty line.
   - =C-r=: forwarded to the shell's own history search.
 

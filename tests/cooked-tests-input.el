@@ -778,6 +778,55 @@ anything that can be typed at."
       (should (bolp))
       (should (< (point) start)))))
 
+(ert-deftest cooked-end-of-buffer-stops-at-the-command ()
+  "The buffer ends at the bottom of the screen, which below a prompt is blank
+rows: the end worth reaching is the end of what is being typed."
+  (cooked-tests--with-prompt-input "e c h o SPC h i"
+    (let ((end (cdr (cooked--input-region))))
+      (should (< end (point-max)))
+      (should (eq (key-binding (kbd "M->")) #'cooked-end-of-buffer))
+      (dolist (from (list (point-min) (cooked--input-start-position) (point-max)))
+        (goto-char from)
+        (cooked-tests--type "M->")
+        (should (= (point) end)))
+      ;; From there the same key goes on to the real end, as `C-a' twice goes
+      ;; on to column 0.
+      (cooked-tests--type "M->")
+      (should (= (point) (point-max))))))
+
+(ert-deftest cooked-recenter-keeps-a-two-row-prompt-whole ()
+  "The `top\=' step of the recentring cycle puts the row the prompt *starts* on
+first, not the row being typed on: the latter scrolls the first row of a
+two-row prompt out of the window."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c"
+        "i=0; while [ $i -lt 40 ]; do echo line$i; i=$((i+1)); done; printf '\\033]133;A\\033\\\\~/dir\\n$ \\033]133;B\\033\\\\'; cat")
+    (should (cooked-tests--settle
+             (lambda () (and (cooked--input-state-p)
+                             (cooked--input-start-position)
+                             cooked--prompt-start))))
+    (cooked--refresh-keymap)
+    (cooked-tests--display-buffer)
+    (when (bound-and-true-p evil-local-mode) (evil-emacs-state))
+    (goto-char (cooked--input-start-position))
+    (should (eq (key-binding (kbd "C-l")) #'cooked-recenter-top-bottom))
+    (should (eql (cooked--prompt-rows-above-point) 1))
+    (let ((recenter-positions '(top middle))
+          (scroll-margin 0)
+          (prompt (save-excursion (goto-char cooked--prompt-start)
+                                  (line-beginning-position))))
+      (should (equal (buffer-substring-no-properties
+                      prompt (+ prompt 5))
+                     "~/dir"))
+      (setq last-command nil this-command 'cooked-recenter-top-bottom)
+      (cooked-recenter-top-bottom)
+      (should (= (window-start) prompt))
+      ;; The rest of the cycle is the stock command's.
+      (setq last-command 'cooked-recenter-top-bottom)
+      (cooked-recenter-top-bottom)
+      (should (eq recenter-last-op 'middle))
+      (should-not (= (window-start) prompt)))))
+
 (ert-deftest cooked-beginning-of-line-is-stock-off-the-prompt-row ()
   "Only the row the prompt ends on is special.  On the output above it the
 command is `move-beginning-of-line\' again, and nothing drags point down to a
@@ -1366,8 +1415,42 @@ A fresh prompt is a fresh line, and Emacs may have it back."
     (cl-letf (((symbol-function 'cooked--send-to-child) #'ignore))
       (cooked-delegate-key "\C-r"))
     (should cooked--delegated)
+    ;; A prompt mark is not the end of the line: it is part of the prompt, and
+    ;; every redraw of the same line sends it again.
     (cooked--handle-semantic '(prompt-start (screen 0 . 0)) nil)
+    (should cooked--delegated)
+    (cooked--handle-semantic '(command-end nil (screen 0 . 0)) nil)
     (should-not cooked--delegated)))
+
+(ert-deftest cooked-delegation-survives-the-prompt-being-redrawn ()
+  "A history widget ends with `zle reset-prompt\=', which writes the prompt and
+its marks again around a line that is still the shell\='s.  Taking the line back
+there leaves the recalled command on screen as read-only prompt text."
+  (skip-unless (executable-find "zsh"))
+  (let ((zshrc (concat cooked-tests--zshrc "
+PROMPT=$'~/dir\\n$ '
+recall() { LBUFFER='echo recalled'; zle reset-prompt }
+zle -N recall
+bindkey '^R' recall
+")))
+    (cooked-tests--with-fake-zdotdir (list (cons ".zshrc" zshrc))
+      (cooked-tests--with-zsh
+        (cooked-delegate-key "\C-r")
+        (should (cooked-tests--settle
+                 (lambda () (save-excursion
+                              (goto-char (point-min))
+                              (search-forward "echo recalled" nil t)))))
+        (cooked-tests--settle #'ignore 0.3)
+        (should cooked--delegated)
+        (should (cooked--child-owns-keyboard-p))
+        ;; Still the shell's to edit, and to run.
+        (cooked--send-to-child " and edited\r")
+        (should (cooked-tests--settle
+                 (lambda () (and (cooked--input-state-p)
+                                 (save-excursion
+                                   (goto-char (point-min))
+                                   (re-search-forward "^recalled and edited$" nil t))))))
+        (should-not cooked--delegated)))))
 
 (ert-deftest cooked-delegate-keys-put-back-what-they-replaced ()
   "`TAB\=' is not delegated by default, and naming it must not be a one-way

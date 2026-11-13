@@ -37,6 +37,20 @@ COOKED_COMPLETION_LOADED=1
 # still announces, so the editable line is unaffected.
 (( $+commands[base64] )) || return
 
+# Aliases off for the rest of the file, and back on at the end if they were on.
+#
+# zsh expands aliases as it *parses*, and a global alias expands wherever its
+# name stands as a word of its own -- a `case' pattern included.  `alias -g
+# P='2>&1 | pager'' is a common thing to have, and with it the `P)' arm further
+# down read as a redirection and the whole file failed to parse.  `emulate -L
+# -o no_aliases' inside a function is too late for this: by the time it runs the
+# body has long been parsed.  A sourced file is read a command at a time, so
+# the option set here governs everything below it.  Quoted, so that these lines
+# are not themselves at the mercy of what they guard against.
+'builtin' 'typeset' '-g' '__cooked_capture_aliases='
+[[ -o aliases ]] && __cooked_capture_aliases=1
+'builtin' 'setopt' 'no_aliases'
+
 typeset -g __cooked_capturing=
 typeset -g __cooked_prefix=0 __cooked_suffix=0 __cooked_truncated=0
 # The text of the span the matches are relative to, kept rather than only its length
@@ -294,3 +308,7 @@ bindkey -M vicmd $'\e[>99u' __cooked_complete
 # rather than assumed by the core: the core is what a remote host is told to source,
 # and it must not claim a capability that lives in this file.
 typeset -g __cooked_complete_replies=1
+
+# Parsing is over; give alias expansion back if it was on.  See the top.
+[[ -n $__cooked_capture_aliases ]] && 'builtin' 'setopt' 'aliases'
+'builtin' 'unset' '__cooked_capture_aliases'

@@ -2343,6 +2343,63 @@ replaces."
         (goto-char start)
       (move-beginning-of-line n))))
 
+(defun cooked-end-of-buffer (&optional arg)
+  "Move point to the end of the command being typed, not of the screen.
+
+The buffer does not end where the text does.  The live screen is rows the child
+has yet to write to, so below a prompt that is not on the last of them there
+are blank lines, and `end-of-buffer\=' lands at the bottom of those -- as far
+from the place the next keystroke belongs as the key can get.  At a prompt the
+end worth going to is the end of the pending input.
+
+With ARG, or from the end of the input already, this is `end-of-buffer\=', so a
+second press goes on to the true end the way a second
+\\[cooked-beginning-of-line] goes on to column 0.  The mark is left behind
+exactly as that command leaves it."
+  (interactive "^P")
+  (let ((end (and (null arg) (cooked--input-state-p)
+                  (cdr (cooked--input-region)))))
+    (if (and end (/= (point) end))
+        (progn
+          (or (region-active-p) (push-mark))
+          (goto-char end))
+      (with-no-warnings (end-of-buffer arg)))))
+
+(defun cooked--prompt-rows-above-point ()
+  "How many screen rows of the live prompt lie above point\='s row, or nil.
+
+Nil unless Emacs owns the line and point is at or below a prompt whose start
+the shell marked: without the OSC 133 `A\=' mark there is no saying where a
+prompt begins, only where its last row ends."
+  (when-let* (((cooked--input-state-p))
+              (start (and cooked--prompt-start
+                          (marker-position cooked--prompt-start)))
+              ((<= start (point))))
+    (let ((rows (count-screen-lines
+                 (save-excursion (goto-char start) (line-beginning-position))
+                 (line-beginning-position))))
+      (and (> rows 0) rows))))
+
+(defun cooked-recenter-top-bottom (&optional arg)
+  "`recenter-top-bottom\=', with a prompt of several rows kept whole at the top.
+
+The cycle is the stock one and so is everything `recenter-positions\=' says
+about it; ARG is passed through untouched.  The one difference is the `top\='
+step at a prompt.  Point is on the row being typed on, which for a prompt of
+two rows or more is its last, so putting *that* row first scrolls the rows
+above it -- the directory, the branch, whatever the first row is for -- out of
+the window, and what is left is half a prompt.  Here the row the prompt starts
+on goes first instead and point\='s row lands as far below it as it already was."
+  (interactive "P")
+  (recenter-top-bottom arg)
+  (when-let* (((eq recenter-last-op 'top))
+              ((null arg))
+              (rows (cooked--prompt-rows-above-point))
+              (line (+ rows (min (max 0 scroll-margin)
+                                 (truncate (/ (window-body-height) 4.0)))))
+              ((< line (1- (window-body-height)))))
+    (recenter line t)))
+
 ;; No evil state bindings here on purpose.
 ;;
 ;; RET reaches `cooked-send-input' through `cooked-input-map' in insert state, and in
