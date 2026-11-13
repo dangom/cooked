@@ -26,6 +26,10 @@ else
 MODULE_SUFFIX := .so
 endif
 MODULE := target/release/libcooked$(MODULE_SUFFIX)
+# The program that keeps a session running with no Emacs attached; see src/host.rs.
+# One crate and one `cargo build' with the core, and installed beside it the same
+# way, because a host is long-lived by design and is running while it is rebuilt.
+HOST := target/release/cooked-host
 
 # Where the evil tests look for evil and its one hard dependency, goto-chg.  -Q is
 # deliberate -- the suite must not inherit your configuration -- so an installed
@@ -33,7 +37,7 @@ MODULE := target/release/libcooked$(MODULE_SUFFIX)
 # evil says so and skips, which is quiet enough to be mistaken for passing.
 EVIL_LOAD_PATH ?=
 
-.PHONY: all test rust-test lisp-test lint checkdoc compile bench clean module terminfo
+.PHONY: all test rust-test lisp-test lint checkdoc compile bench clean module host terminfo
 
 all: test
 
@@ -55,6 +59,10 @@ module:
 	@mkdir -p target/release
 	@cp $(CARGO_TARGET_DIR)/release/libcooked$(MODULE_SUFFIX) $(MODULE).new
 	@mv -f $(MODULE).new $(MODULE)
+	@cp $(CARGO_TARGET_DIR)/release/cooked-host $(HOST).new
+	@mv -f $(HOST).new $(HOST)
+
+host: module
 
 # Depends on `module' because the two halves are one protocol: the defuns the
 # core provides and the Lisp that calls them are versioned together, so a suite
@@ -125,4 +133,4 @@ bench:
 # deliberately not cargo's to manage -- has to be named here or it survives.
 clean:
 	cargo clean
-	rm -f lisp/*.elc tests/*.elc $(MODULE) $(MODULE).new
+	rm -f lisp/*.elc tests/*.elc $(MODULE) $(MODULE).new $(HOST) $(HOST).new

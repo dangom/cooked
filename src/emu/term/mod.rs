@@ -158,6 +158,10 @@ pub enum Event {
     /// XTWINOPS 22/23: push or pop the window title. `smcup`/`rmcup` end in these, so a
     /// full-screen program that sets a title expects it restored when it leaves.
     TitleStack(bool),
+    /// Everything before this was a replay of output already seen once; see
+    /// [`Term::replay_ended`]. The flag is whether the replay began part-way through
+    /// the session rather than at its start.
+    ReplayEnd(bool),
 }
 
 /// How the child wants keys that have no classical encoding — modified Return, Tab,
@@ -811,6 +815,64 @@ impl Term {
     /// Text of the last non-blank line — the prompt a `getpass` child just printed.
     pub fn trailing_text(&self) -> Option<String> {
         self.state.screen().last_nonblank_text()
+    }
+
+    /// Mark the end of a replay, as an event in its place among the others.
+    ///
+    /// A session attached to a host is first fed what the child wrote before anyone
+    /// was looking. Those bytes rebuild the screen and the transcript, but everything
+    /// else they ask for was asked once already and answered or declined then: a
+    /// device report answered now arrives at the child as typed input, and a
+    /// notification is news from an hour ago. So the reader says where the replay
+    /// stops, and it has to be said *here*, in the stream of events, because a drain
+    /// can carry events from both sides of the line and only their order tells them
+    /// apart.
+    pub fn replay_ended(&mut self, truncated: bool) {
+        self.state.events.push(Event::ReplayEnd(truncated));
+    }
+
+    /// The sequences that put a fresh terminal into the modes this one is in.
+    ///
+    /// For a replay that cannot start at the beginning. The child negotiated these
+    /// once, when it started, and will not say them again; a terminal that joins
+    /// later and is shown only the recent output would otherwise encode keys the old
+    /// way, paste without brackets and report no mouse, to a program that asked for
+    /// all three. The screen itself is not described: the program is asked to redraw
+    /// instead, which is the one description of it guaranteed to be right.
+    pub fn mode_preamble(&self) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let modes = &self.state.modes;
+        let mut out = String::new();
+        let mut dec = |on: bool, number: u16| {
+            if on {
+                let _ = write!(out, "\x1b[?{number}h");
+            }
+        };
+        dec(self.state.on_alt, 1049);
+        dec(modes.app_cursor, 1);
+        dec(modes.bracketed_paste, 2004);
+        dec(modes.focus_events, 1004);
+        dec(modes.alt_scroll, 1007);
+        dec(modes.color_scheme_updates, 2031);
+        // One of the three, the widest: they replace one another rather than adding up.
+        let mouse = modes.mouse;
+        dec(mouse.motion, 1003);
+        dec(mouse.drag && !mouse.motion, 1002);
+        dec(mouse.click && !mouse.drag && !mouse.motion, 1000);
+        dec(mouse.sgr, 1006);
+        if !modes.cursor_visible {
+            out.push_str("\x1b[?25l");
+        }
+        if modes.app_keypad {
+            out.push_str("\x1b=");
+        }
+        if modes.modify_other_keys != 0 {
+            let _ = write!(out, "\x1b[>4;{}m", modes.modify_other_keys);
+        }
+        for flags in &modes.kitty_keys {
+            let _ = write!(out, "\x1b[>{flags}u");
+        }
+        out.into_bytes()
     }
 }
 

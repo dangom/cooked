@@ -1375,6 +1375,9 @@ src/pty.rs       pty ownership via nix, setsid/TIOCSCTTY, termios -> Mode, bound
 src/emu/         cell/row/style, grid with damage tracking, vte-driven VT parser
 src/emu/term/    the VT front end: mod (types, Term), csi, osc, graphics, state
 src/session.rs   reader thread, coalesced wakeups, explicit idempotent shutdown
+src/host.rs      the `cooked-host` program: keeps a child and its pty with no Emacs
+                 attached, and hands both to a terminal that asks; the module comment
+                 is the design
 src/lib.rs       the Lisp-facing surface
 src/platform/    one module per OS; each gets the best facility it actually has rather
                  than levelling down to the intersection (see below)

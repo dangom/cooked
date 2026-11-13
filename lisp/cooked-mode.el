@@ -1460,6 +1460,15 @@ and a session that exits and is then killed goes through both."
   (when cooked--wake (delete-process cooked--wake))
   (setq cooked--session nil cooked--wake nil))
 
+(defvar cooked-exit-functions nil
+  "Abnormal hook run in a session buffer after its session has ended.
+
+Each function is called with the exit status, or -2 if what ended was not the
+child but the connection to the host keeping it.  The session is already
+stopped and the buffer says so; like everything in `cooked--on-exit', this runs
+from inside a drain, so a function that wants to do more than take note --
+kill the buffer, start something in it -- has to defer that.")
+
 (defun cooked--on-exit (code)
   "Report that the child exited with CODE and stop the session."
   ;; A child can die while still on the alt screen — killed from outside, or
@@ -1478,7 +1487,12 @@ and a session that exits and is then killed goes through both."
     (cooked--with-child-edit
       (save-excursion
         (goto-char (point-max))
-        (insert (format "\n[exited %s]\n" code))))
+        ;; -2 is not a status: it is the core saying that the host keeping the
+        ;; child went away without telling how the child did.  See `HOST_LOST'
+        ;; in src/pty.rs.
+        (insert (if (eql code -2)
+                    "\n[detached: the session's host is gone]\n"
+                  (format "\n[exited %s]\n" code)))))
     (cooked--dolist-windows w (get-buffer-window-list nil nil t)
       (when (>= (window-point w) (1- old-end))
         (cooked--pin-transcript-bottom (list w)))))
@@ -1491,6 +1505,7 @@ and a session that exits and is then killed goes through both."
   ;; deliberate peek -- would otherwise leave it read-only under `cooked-peek-map'
   ;; with nothing left to thaw it.
   (cooked--refresh-keymap)
+  (run-hook-with-args 'cooked-exit-functions code)
   ;; Deferred: this runs from inside the drain, which keeps working with the
   ;; buffer and its locals after we return.  Killing here would pull them out
   ;; from under it, and would run `kill-buffer-hook' — arbitrary user code —
@@ -1520,6 +1535,10 @@ and a session that exits and is then killed goes through both."
 ;; litter, since nothing turns such a buffer back into a session.  A bookmark
 ;; is the same capability chosen one at a time, by hand, which is the shape
 ;; this belongs in.
+;;
+;; cooked-host.el does register, for the sessions it keeps and no others:
+;; restoring one of those attaches to something already running and spawns
+;; nothing, which is the whole of the objection above.
 
 ;; imenu and bookmark do not preload the variables they are configured through,
 ;; so the compiler is told about them here rather than by requiring two

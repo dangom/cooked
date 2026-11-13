@@ -66,3 +66,11 @@ pub(crate) fn no_sigpipe(fd: std::os::fd::BorrowedFd<'_>) {
     // SAFETY: a plain flag-setting fcntl on a descriptor the caller holds open.
     unsafe { libc::fcntl(fd.as_raw_fd(), F_SETNOSIGPIPE, 1) };
 }
+
+/// The user at the other end of a Unix socket, if the kernel will say.
+pub(crate) fn peer_uid(fd: std::os::fd::BorrowedFd<'_>) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: both out-pointers are to locals of the right type.
+    (unsafe { libc::getpeereid(fd.as_raw_fd(), &raw mut uid, &raw mut gid) } == 0).then_some(uid)
+}

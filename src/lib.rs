@@ -6,6 +6,7 @@
 pub mod emu;
 pub(crate) mod env;
 pub(crate) mod error;
+pub mod host;
 pub(crate) mod platform;
 pub(crate) mod pty;
 pub(crate) mod session;
@@ -128,6 +129,15 @@ pub unsafe extern "C" fn emacs_module_init(runtime: *mut Runtime) -> std::ffi::c
         /// awaiting collection before the child is left to block on its own writes; it defaults to
         /// 8000 when omitted or nil.
         "cooked--spawn" 5..=8 => spawn;
+
+        /// Attach to the session a host process is keeping at SOCKET, and return a handle.
+        /// Arguments are SOCKET, WAKE, optional MIN-REDISPLAY-INTERVAL and optional
+        /// BACKLOG-LIMIT, the last three as for `cooked--spawn'. The handle is the same kind
+        /// of thing that function returns and everything that takes one takes this one, with
+        /// two differences. What is drained first is a replay of what the child wrote before
+        /// now, and it ends with a `replay-end' event. And `cooked--kill' lets go of the child
+        /// rather than ending it: the host keeps it, and it can be attached to again.
+        "cooked--attach" 2..=4 => attach;
 
         /// Collect everything that changed in SESSION since the last call.
         /// Returns a plist with :scrolled, :rows, :height, :used, :head, :cursor, :alt,
@@ -520,23 +530,7 @@ fn spawn(env: Env, args: &[Value]) -> Result<Value> {
     };
     let wake = env.open_channel(args[4])?;
     let cwd = env.opt::<String>(args, 5)?;
-    // The interval through the constructor rather than as a field of a struct literal,
-    // because the frame ceiling is derived from it and update syntax would compute that
-    // from the default and then overwrite the interval it came from; see
-    // `Options::with_min_redisplay_interval`. `backlog_limit` is nobody's derivation and
-    // stays an ordinary field.
-    let defaults = match env.opt::<i64>(args, 6)? {
-        Some(ms) => session::Options::with_min_redisplay_interval(
-            std::time::Duration::from_millis(ms.max(0) as u64),
-        ),
-        None => session::Options::default(),
-    };
-    let options = session::Options {
-        backlog_limit: env
-            .opt::<i64>(args, 7)?
-            .map_or(defaults.backlog_limit, |n| n.max(1) as usize),
-        ..defaults
-    };
+    let options = options(env, args, 6)?;
 
     let session = Session::spawn(
         &argv,
@@ -547,6 +541,40 @@ fn spawn(env: Env, args: &[Value]) -> Result<Value> {
         options,
     )
     .or_signal(env)?;
+    env.user_ptr(session)
+}
+
+/// The two optional tuning arguments `cooked--spawn' and `cooked--attach' both end
+/// with, the first of them at FIRST.
+fn options(env: Env, args: &[Value], first: usize) -> Result<session::Options> {
+    // The interval through the constructor rather than as a field of a struct literal,
+    // because the frame ceiling is derived from it and update syntax would compute that
+    // from the default and then overwrite the interval it came from; see
+    // `Options::with_min_redisplay_interval`. `backlog_limit` is nobody's derivation and
+    // stays an ordinary field.
+    let defaults = match env.opt::<i64>(args, first)? {
+        Some(ms) => session::Options::with_min_redisplay_interval(
+            std::time::Duration::from_millis(ms.max(0) as u64),
+        ),
+        None => session::Options::default(),
+    };
+    Ok(session::Options {
+        backlog_limit: env
+            .opt::<i64>(args, first + 1)?
+            .map_or(defaults.backlog_limit, |n| n.max(1) as usize),
+        ..defaults
+    })
+}
+
+fn attach(env: Env, args: &[Value]) -> Result<Value> {
+    let socket = env.from_lisp::<String>(args[0])?;
+    let options = options(env, args, 2)?;
+    // Before the channel is opened: a host that is not there is the ordinary way for
+    // this to fail, and it should fail without having taken anything.
+    let attached = host::attach(std::path::Path::new(&socket)).or_signal(env)?;
+    let wake = env.open_channel(args[1])?;
+    let pty = pty::Pty::attach(attached.master, attached.stream, attached.child);
+    let session = Session::attach(pty, attached.size, wake, options).or_signal(env)?;
     env.user_ptr(session)
 }
 
@@ -1246,6 +1274,8 @@ fn event_to_lisp(env: Env, event: &Event, update: &Update, rows: &[RowSpan]) -> 
         Event::DisplayCleared => list!(env, [sym!(env, "display-cleared")?]),
         // (title-stack PUSH-P)
         Event::TitleStack(push) => list!(env, [sym!(env, "title-stack")?, *push]),
+        // (replay-end TRUNCATED-P)
+        Event::ReplayEnd(truncated) => list!(env, [sym!(env, "replay-end")?, *truncated]),
     }
 }
 

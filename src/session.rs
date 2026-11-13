@@ -808,7 +808,24 @@ impl Session {
 
         crate::platform::no_sigpipe(wake.as_fd());
 
-        let pty = Pty::spawn(argv, env, size, cwd)?;
+        Self::start(Pty::spawn(argv, env, size, cwd)?, size, wake, options)
+    }
+
+    /// Take up a child that a host process is keeping, and start reading what the host
+    /// sends of it. PTY is from [`Pty::attach`]; SIZE is the size the host says the tty
+    /// has, which is the size the replay has to be laid out at to mean anything.
+    pub(crate) fn attach(pty: Pty, size: Winsize, wake: OwnedFd, options: Options) -> Result<Self> {
+        // The same two precautions `spawn` takes, for the same reasons: this process
+        // goes on to fork other children, and none of them is to hold the wake pipe.
+        nix::fcntl::fcntl(
+            wake.as_fd(),
+            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+        )?;
+        crate::platform::no_sigpipe(wake.as_fd());
+        Self::start(pty, size, wake, options)
+    }
+
+    fn start(pty: Pty, size: Winsize, wake: OwnedFd, options: Options) -> Result<Self> {
         let mode = pty.mode().unwrap_or_default();
         let shared = Arc::new(Shared {
             pty,
@@ -1339,17 +1356,35 @@ impl Shared {
             if !self.outbound.held().is_empty() {
                 wanted |= PollFlags::POLLOUT;
             }
+            // A child kept by a host is read from one descriptor and written to
+            // another, so writability is asked of the master on its own -- and only
+            // while there is something to write, because a master asked about nothing
+            // still reports a hangup, and this loop would spin on it.
+            let remote = self.pty.is_remote();
+            let writing = remote && wanted.contains(PollFlags::POLLOUT);
             let mut fds = [
-                PollFd::new(self.pty.as_fd(), wanted),
+                PollFd::new(
+                    self.pty.source(),
+                    if remote { PollFlags::POLLIN } else { wanted },
+                ),
                 PollFd::new(self.interrupt.read.as_fd(), PollFlags::POLLIN),
+                PollFd::new(self.pty.as_fd(), PollFlags::POLLOUT),
             ];
-            match poll(&mut fds, self.poll_timeout()) {
+            let watched = if writing { 3 } else { 2 };
+            match poll(&mut fds[..watched], self.poll_timeout()) {
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(_) => break,
                 Ok(_) => {}
             }
             let interrupted = fds[1].revents().is_some_and(|r| !r.is_empty());
-            let events = fds[0].revents().unwrap_or(PollFlags::empty());
+            let mut events = fds[0].revents().unwrap_or(PollFlags::empty());
+            if writing
+                && fds[2]
+                    .revents()
+                    .is_some_and(|r| r.contains(PollFlags::POLLOUT))
+            {
+                events |= PollFlags::POLLOUT;
+            }
             // Anything but writability: input, or the hangup and error bits a closed
             // slave is reported with, which only a read can turn into an answer.
             let ready = !(events - PollFlags::POLLOUT).is_empty();
@@ -1423,7 +1458,12 @@ impl Shared {
             }
 
             match self.pty.read(&mut buf) {
-                Ok(None) => {}
+                Ok(None) => {
+                    if let Some(truncated) = self.pty.take_replay_end() {
+                        self.term.held().replay_ended(truncated);
+                        self.notifier.fed(true);
+                    }
+                }
                 Ok(Some([])) => return self.finish(Ended::ChildGone),
                 Ok(Some(data)) => {
                     let drawable = self.term.held().feed(data);
@@ -1700,6 +1740,187 @@ mod tests {
             .iter()
             .flat_map(|(_, runs)| runs.iter().map(|r| r.text.clone()))
             .collect()
+    }
+
+    // -----------------------------------------------------------------------------
+    // Sessions a host keeps; see `host.rs`.
+
+    /// A directory for one test's hosts, short enough that a socket in it has an
+    /// address: `sun_path` holds a hundred-odd bytes and a temporary directory on
+    /// macOS spends most of them.
+    fn host_directory(tag: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(format!("/tmp/cooked-t-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Start a host for SCRIPT under `sh`, serving on a thread of its own.
+    fn host(dir: &std::path::Path, name: &str, script: &str, ring: usize) {
+        let argv = ["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()];
+        let env = [("TERM".to_owned(), "xterm-256color".to_owned())];
+        let host = crate::host::Host::create(
+            dir,
+            &crate::host::Spec {
+                name,
+                argv: &argv,
+                env: &env,
+                cwd: None,
+                rows: 24,
+                cols: 80,
+                ring,
+                note: None,
+            },
+        )
+        .expect("host");
+        std::thread::spawn(move || host.serve());
+    }
+
+    fn attached(dir: &std::path::Path, name: &str) -> (Session, OwnedFd) {
+        let (read, write) = pipe();
+        let socket = dir.join(format!("{name}.sock"));
+        let at = crate::host::attach(&socket).expect("attach");
+        let pty = Pty::attach(at.master, at.stream, at.child);
+        (
+            Session::attach(pty, at.size, write, Options::default()).expect("session"),
+            read,
+        )
+    }
+
+    fn replay_end(update: &Update) -> Option<bool> {
+        update.delta.events.iter().find_map(|e| match e {
+            Event::ReplayEnd(truncated) => Some(*truncated),
+            _ => None,
+        })
+    }
+
+    /// The whole of what a host is for, end to end: a child that outlives the terminal
+    /// looking at it, takes input from whichever terminal is, and shows a terminal that
+    /// comes later what it missed.
+    #[test]
+    fn a_hosted_child_survives_its_terminal_and_replays_to_the_next() {
+        let dir = host_directory("survive");
+        host(
+            &dir,
+            "one",
+            "echo first; while read line; do echo \"got $line\"; done",
+            crate::host::DEFAULT_RING,
+        );
+
+        let (session, _wake) = attached(&dir, "one");
+        let update = wait_for(&session, |u| rendered(u).contains("first"));
+        assert_eq!(replay_end(&update), Some(false));
+        let child = session.pid().get();
+
+        // Input goes straight to the pty, through the master the host handed over.
+        session.send(b"alpha\n").expect("send");
+        wait_for(&session, |u| rendered(u).contains("got alpha"));
+
+        // Letting go is not ending: the child is the host's, not this terminal's.
+        assert!(session.shutdown());
+        drop(session);
+        assert!(alive(child).is_ok(), "the child ended with its terminal");
+
+        // Written while nobody was attached, and still there for whoever comes next.
+        crate::host::send(&dir, "one", b"beta\n").expect("send through the host");
+
+        let (session, _wake) = attached(&dir, "one");
+        let update = wait_for(&session, |u| {
+            replay_end(u).is_some() && rendered(u).contains("got beta")
+        });
+        let text = rendered(&update);
+        assert!(
+            text.contains("first") && text.contains("got alpha"),
+            "{text:?}"
+        );
+        assert_eq!(session.pid().get(), child);
+
+        // What a script sees of it: the screen as text, and the name among the others.
+        let screen = crate::host::capture(&dir, "one").expect("capture");
+        assert!(screen.contains("got beta"), "{screen:?}");
+        assert_eq!(crate::host::list_brief(&dir), "one live\n");
+
+        // A paste is typed too. This child never asked for the brackets, so it is
+        // sent none, and reads the line as a line.
+        crate::host::paste(&dir, "one", b"gamma\n").expect("paste");
+        wait_for(&session, |u| rendered(u).contains("got gamma"));
+
+        crate::host::kill(&dir, "one").expect("kill");
+        let update = wait_for(&session, |u| u.exit.is_some());
+        assert!(update.exit.is_some_and(|status| status >= 0));
+        assert_eq!(alive(child), Err(Errno::ESRCH));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A child that finished while nobody was looking is kept until somebody has seen
+    /// how it went, and that somebody is told its real status.
+    #[test]
+    fn a_hosted_child_that_exits_unattended_waits_to_be_seen() {
+        let dir = host_directory("exit");
+        host(
+            &dir,
+            "done",
+            "echo result; exit 3",
+            crate::host::DEFAULT_RING,
+        );
+        // Long enough for the child to be over before anyone attaches.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(crate::host::list(&dir).contains("\"state\":\"exited\",\"status\":3"));
+
+        let (session, _wake) = attached(&dir, "done");
+        let update = wait_for(&session, |u| u.exit.is_some());
+        assert_eq!(update.exit, Some(3));
+        assert!(rendered(&update).contains("result"));
+
+        // Seen once, and with that the host has nothing left to keep.
+        let gone = Instant::now() + Duration::from_secs(3);
+        while dir.join("done.json").exists() && Instant::now() < gone {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!dir.join("done.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replay that cannot start at the beginning says so, and still leaves the
+    /// terminal in the modes the child asked for before the part that is left.
+    #[test]
+    fn a_truncated_replay_restores_the_modes_the_child_negotiated() {
+        let dir = host_directory("trunc");
+        // Bracketed paste on, then far more output than the ring holds.
+        host(
+            &dir,
+            "big",
+            "printf '\\033[?2004h'; i=0; while [ $i -lt 2000 ]; do echo \"line $i of padding to fill the ring\"; i=$((i+1)); done; echo END; cat",
+            8192,
+        );
+        std::thread::sleep(Duration::from_millis(600));
+
+        let (session, _wake) = attached(&dir, "big");
+        let update = wait_for(&session, |u| replay_end(u).is_some());
+        assert_eq!(replay_end(&update), Some(true));
+        assert!(session.bracketed_paste());
+        crate::host::kill(&dir, "big").expect("kill");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host that goes away without a word ends the session, with a status nothing
+    /// exits with, rather than leaving a buffer that looks alive and is not.
+    #[test]
+    fn a_session_whose_host_vanishes_is_told_so() {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("pair");
+        ours.set_nonblocking(true).expect("nonblock");
+        // Any descriptor will do for a master nothing is written to.
+        let (master, _keep) = pipe();
+        let (_read, write) = pipe();
+        let pty = Pty::attach(master, ours.into(), Pid::from_raw(i32::MAX));
+        let size = Winsize {
+            rows: 24,
+            cols: 80,
+            cell: Default::default(),
+        };
+        let session = Session::attach(pty, size, write, Options::default()).expect("session");
+        drop(theirs);
+        let update = wait_for(&session, |u| u.exit.is_some());
+        assert_eq!(update.exit, Some(crate::pty::HOST_LOST));
     }
 
     /// The same promise for pictures, which used to be exempt from it. A child drawing

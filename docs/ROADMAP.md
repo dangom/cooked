@@ -184,14 +184,46 @@ whether it feels good before generalising.
 
 ---
 
-## 7. Detach and reattach
+## 7. Detach and reattach — **shipped**
 
-Rust owns the pty, not Emacs. Move the reader into a daemon and a session could outlive an
-Emacs restart: tmux, where the client is your editor. The architecture is most of the way
-there already — the module boundary is a session handle and a wakeup pipe.
+`(require 'cooked-host)`, and `src/host.rs`. A session can be the child of a small
+program of its own, `cooked-host`, which keeps it running with no Emacs attached. One
+host per session, the way `dtach` does it: no server to be the single point of failure,
+and the directory of sockets is the list of sessions.
 
-**Effort:** large. **Risk:** large; it changes the process model and the security surface.
-**Payoff:** large. Worth a design sketch before any code.
+What it turned out to be is smaller than the sketch above feared, because of two
+decisions that removed most of the protocol:
+
+- **The pty is handed over, not proxied.** A terminal that attaches is sent the host's
+  own master descriptor through the socket, and from then on writes input to it, sets
+  its size and reads its modes directly. Only *reading* stays with the host, because a
+  byte read from a pty is gone and the host has to see every one.
+- **A replay is the child's own bytes.** The host keeps the recent output verbatim and
+  the terminal's emulator re-reads it. So there is no format for describing a screen,
+  nothing for a week-old host and a rebuilt module to disagree about, and the buffer
+  comes back with everything the emulator knows how to find -- OSC 133 marks, links,
+  images -- rather than with what a snapshot format remembered to include.
+
+The cost of the second is that a replay must be *inert*: the old output's questions
+were answered once and its effects happened once. `cooked--replaying` is that rule, and
+the core marks the exact event at which it stops applying.
+
+**Left:**
+
+- **Layout** is done by not having one: a hosted buffer is restorable by `desktop` and
+  by `persp-mode`, under its old name, and those restore the windows. What is left is
+  that nothing restores *by itself* -- a saved session has to be loaded, by whatever
+  loads it.
+- **Screen history across a reboot.** The ring is in the host's memory. A session cut
+  off by a restart comes back as a fresh shell in the same directory, not with its
+  scrollback.
+- **Completion at the first prompt after attaching.** The shell announces its
+  completion channel per prompt, over the same OSC that carries commands, so the
+  announcement is not honoured from a replay; `TAB` asks the shell again from the
+  next prompt on.
+- **A terminal client.** `cooked-host attach` from a plain terminal -- the replay is
+  already something any terminal can read.
+- **Handing a running session to a newer host**, the way herdr's `--handoff` does.
 
 ---
 

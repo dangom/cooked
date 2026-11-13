@@ -34,3 +34,10 @@ pub(crate) fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// Nothing to do: Linux raises a write's SIGPIPE on the writing thread, where
 /// `session::write_without_sigpipe` and the reader's own mask already catch it.
 pub(crate) fn no_sigpipe(_fd: std::os::fd::BorrowedFd<'_>) {}
+
+/// The user at the other end of a Unix socket, if the kernel will say.
+pub(crate) fn peer_uid(fd: std::os::fd::BorrowedFd<'_>) -> Option<u32> {
+    nix::sys::socket::getsockopt(&fd, nix::sys::socket::sockopt::PeerCredentials)
+        .ok()
+        .map(|credentials| credentials.uid())
+}

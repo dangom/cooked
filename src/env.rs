@@ -282,6 +282,7 @@ symbols! {
     EraseScrollback => "erase-scrollback",
     DisplayCleared => "display-cleared",
     TitleStack => "title-stack",
+    ReplayEnd => "replay-end",
     PromptStart => "prompt-start",
     PromptContinuation => "prompt-continuation",
     PromptEnd => "prompt-end",

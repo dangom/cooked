@@ -484,7 +484,11 @@ and not about the letters."
   (cooked-tests--with-session (list "/bin/sh")
     (should (cooked-tests--settle (lambda () (cooked--live-p cooked--session))))
     (should-not desktop-save-buffer)
-    (should-not (assq 'cooked-mode desktop-buffer-mode-handlers))
+    ;; No handler of the core's.  cooked-host.el registers one, for the sessions
+    ;; it keeps: restoring those attaches to something already running and
+    ;; starts nothing, which is the whole of the objection above.
+    (should (memq (alist-get 'cooked-mode desktop-buffer-mode-handlers)
+                  '(nil cooked-host--desktop-restore)))
     (let ((directory (make-temp-file "cooked-tests-desktop-" t)))
       (unwind-protect
           (let ((desktop-base-file-name "desktop")

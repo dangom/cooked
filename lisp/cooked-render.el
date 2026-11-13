@@ -606,6 +606,36 @@ and the region shaped before anything measures it."
   (cooked--trim-scrollback)
   (cooked--check-undo-anchor))
 
+(defconst cooked--replay-osc-codes '(0 1 2 7)
+  "OSC codes still honoured while a replay is in progress.
+
+The title and the working directory: what they set is state a later drain
+depends on, and setting it twice does nothing the first time did not.  Every
+other code either asks a question, whose answer would be typed at a child that
+stopped waiting for it long ago, or asks for an effect.")
+
+(defun cooked--replay-osc-p (code parts)
+  "Whether the OSC with CODE and PARTS is honoured while a replay is in progress.
+
+`cooked--replay-osc-codes', and one more: the shell's announcement of its
+completion channel, `OSC 51;CH'.  It is of a kind with the title and the
+directory -- a `setq' of inert, validated data that says what the prompt on
+screen can do, cleared again by the marks that follow it -- and without it a
+shell that is attached to at its prompt would not be known to complete until
+the next one.  The rest of OSC 51 asks for things, and stays out."
+  (or (memq code cooked--replay-osc-codes)
+      (and (eql code 51)
+           (stringp (car parts))
+           (string-prefix-p "CH" (car parts)))))
+
+(defvar cooked-replay-end-functions nil
+  "Abnormal hook run in a session buffer when a replay has finished.
+
+Each function is called with one argument, non-nil if the replay started
+part-way through the session rather than at its beginning -- in which case the
+screen is what the recent output happened to leave on it, and a full-screen
+program has to be asked to draw itself again.")
+
 (defun cooked--handle-event (event batch-start)
   "Dispatch a single EVENT from the emulator.
 
@@ -616,9 +646,18 @@ Events are occurrences only.  State the redisplay depends on rides the drain's
 own fields instead — `:alt' and the rest — so that nothing arrives twice with
 two chances to disagree."
   (pcase event
-    (`(bell) (ding))
-    (`(osc ,code ,bell . ,parts) (cooked--handle-osc code bell parts))
-    (`(reply . ,bytes) (cooked--send-if-live bytes))
+    ;; The three that act rather than record, and so the three a replay must not
+    ;; repeat; see `cooked--replaying'.  An OSC is let through only where it says
+    ;; what state the terminal is in -- its title, its directory -- and never
+    ;; where it asks for something to be done.
+    (`(bell) (unless cooked--replaying (ding)))
+    (`(osc ,code ,bell . ,parts)
+     (when (or (not cooked--replaying) (cooked--replay-osc-p code parts))
+       (cooked--handle-osc code bell parts)))
+    (`(reply . ,bytes) (unless cooked--replaying (cooked--send-if-live bytes)))
+    (`(replay-end ,truncated)
+     (setq cooked--replaying nil)
+     (run-hook-with-args 'cooked-replay-end-functions truncated))
     (`(title-stack ,push) (cooked--handle-title-stack push))
     ;; `CSI 3 J', the tail of what `clear' sends.  Honoured unconditionally: it is
     ;; only reachable by something already holding the terminal, every other terminal

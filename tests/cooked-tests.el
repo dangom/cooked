@@ -65,6 +65,7 @@
 (require 'cooked-tests-menu)
 (require 'cooked-tests-display)
 (require 'cooked-tests-process)
+(require 'cooked-tests-host)
 (require 'cooked-tests-bench)
 
 (provide 'cooked-tests)

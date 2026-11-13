@@ -274,6 +274,10 @@ you can see how a scrollback full of commands went without reading any of it.
 Scopes a session to the current project root: =cooked-project= reuses one terminal per
 project the way ~project-shell~ does, rather than one per invocation.
 
+** cooked-host
+
+Sessions that outlive Emacs -- see [[*Sessions that outlive Emacs][below]].
+
 ** Shell integration
 
 cooked injects its snippet into the zsh and bash shells it starts, so a local session
@@ -369,6 +373,75 @@ what you run:
   pixels taller than the rest — and the rows under it move every time a spinner changes
   frame.  cooked scales and pads such glyphs so that every row is one height and every
   column lines up.  See ~cooked-fit-fallback-glyphs~.
+
+* Sessions that outlive Emacs
+
+An ordinary session is a child of Emacs and ends with it.  With
+=(require 'cooked-host)= a session can instead be /hosted/: a child of a small
+program of its own, =cooked-host=, that keeps it running whether or not anything is
+looking.  Build the program with =make host=; it is the same crate as the native core.
+
+- =M-x cooked-host-shell=: a shell that will still be there after Emacs is not.
+- =M-x cooked-host-attach=: look at a session, chosen by name.
+- =M-x cooked-host-detach=, or just killing the buffer: stop looking.  Nothing asks
+  first, because nothing is ended.
+- =M-x cooked-host-kill=: end a session.
+- =M-x cooked-host-restore=: attach a buffer to every session there is, and start
+  again the shells that a reboot cut off, in the directories they were in.
+
+From Lisp, ~cooked-host-exec~ is ~cooked-exec~ for a session that is kept:
+
+#+begin_src emacs-lisp
+(cooked-host-exec (generate-new-buffer "*agent*") "agent-1" (getenv "HARNESS"))
+#+end_src
+
+A buffer attached to a host is not a picture of somebody else's terminal, the way a
+tmux client is.  It is the terminal: the host hands over the pty itself, so typing,
+resizing and telling a prompt from a full-screen program work exactly as they do for a
+child of Emacs' own, and the buffer is first rebuilt from what the child wrote before
+it existed -- scrollback, prompts, command records, links and all -- by replaying those
+bytes through the same emulator that would have read them the first time.  While that
+replay runs, nothing the old output /asks for/ is done: no bell, no notification, no
+clipboard write, no answer typed back at a child that stopped waiting for one.
+
+The replay is bounded (eight megabytes by default; =--ring= on the command line), so a
+very long session comes back from part-way through, with the modes the child
+negotiated restored and a full-screen program asked to redraw.
+
+*Layouts.* A hosted buffer is one of the buffers a saved session of Emacs brings
+back: =desktop-save-mode= knows how, and so does =persp-mode= (Doom's workspaces,
+Spacemacs's layouts).  It comes back under the name it had, attached to the session it
+was looking at, which is all either needs to put it back in every window and workspace
+it was in.  cooked keeps no layout of its own.  A package with buffers of its own on
+hosted sessions lists what makes them its own in ~cooked-host-saved-locals~, and says
+what starting one again after a reboot means in ~cooked-host-revive-functions~.
+
+*From a script.* The program is its own command line, for whatever is not Emacs:
+
+#+begin_src sh
+cooked-host new build-1 --dir ~/src/thing -- make watch   # start, and return
+cooked-host list --brief                                  # NAME STATE, one to a line
+cooked-host capture build-1                               # the screen, as text
+echo 'please stop' | cooked-host send --paste build-1     # typed; bracketed if asked for
+cooked-host kill build-1
+#+end_src
+
+With ~desktop-save-mode~, hosted buffers are saved by name and come back attached.
+Ordinary sessions are still left out, for the reason they always were: restoring one
+would start a shell nobody asked for, and restoring one of these starts nothing.
+
+=cooked-host= is usable without Emacs, which is the point for scripts and for agents
+started from a shell:
+
+#+begin_src sh
+cooked-host new build -- make -j8      # start it, detached
+cooked-host list                       # one JSON object per session
+echo 'make test' | cooked-host send build
+cooked-host kill build
+#+end_src
+
+Sessions live under =~/.local/state/cooked/hosts= (or ~$COOKED_HOST_DIR~), in a
+directory only you can enter: the socket there is the keyboard of a shell.
 
 * Compile integration
 

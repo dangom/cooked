@@ -136,6 +136,12 @@ growing its own copy of `cooked--mark-command-end\='s bookkeeping: command
 decorations paint an indicator from it, and a notifier for long-running
 commands is the other obvious consumer.
 
+Called for the commands of a replay too -- a buffer attaching to a hosted
+session is rebuilt command by command, and their decorations with it.  A
+function that announces rather than records should look at `cooked--replaying\='
+and say nothing while it is set: those commands finished before anyone was
+looking.
+
 Called from `cooked--mark-command-end\=', after the record has been pushed onto
 `cooked--commands\=', with that same record.  `cooked-command-start\=' and
 `cooked-command-end\=' are markers by then; `cooked-command-prompt\=' is a marker

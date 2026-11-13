@@ -22,7 +22,7 @@ use nix::sys::termios::{LocalFlags, SpecialCharacterIndices, Termios, tcgetattr}
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{AccessFlags, Pid as NixPid, access, tcgetpgrp};
 use std::ffi::{CStr, CString, OsStr};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::PoisonError;
@@ -141,6 +141,11 @@ impl AtomicMode {
 pub(crate) struct Pid(libc::pid_t);
 
 impl Pid {
+    /// A pid somebody else reported: a host, of the child it keeps.
+    pub(crate) fn from_raw(pid: i32) -> Self {
+        Self(pid)
+    }
+
     pub(crate) fn get(self) -> i32 {
         self.0
     }
@@ -180,6 +185,9 @@ impl From<Winsize> for libc::winsize {
 pub(crate) struct Pty {
     master: PtyMaster,
     child: Pid,
+    /// Set when the child is somebody else's: a host process owns it and its output
+    /// arrives over a socket. See [`Remote`].
+    remote: Option<Remote>,
     /// Set once `waitpid` has collected the child. Signalling after that point would
     /// aim at a pid the kernel is free to have handed to somebody else.
     reaped: std::sync::atomic::AtomicBool,
@@ -192,6 +200,127 @@ pub(crate) struct Pty {
     /// single `killpg` — never blocking — so holding this across either is always
     /// short.
     reap_lock: std::sync::Mutex<()>,
+}
+
+/// The status a session ends with when its host went away without saying how the child
+/// did: the host was killed, or dropped a terminal that had stopped reading. Negative,
+/// so it cannot be mistaken for anything a process exits with.
+pub(crate) const HOST_LOST: i32 = -2;
+
+/// The longest payload a frame other than data may carry; see [`Decode`].
+const SMALL_FRAME: usize = 8;
+
+/// The far end of a child kept by a host: the socket its output arrives on.
+///
+/// What arrives is framed -- a tag, a big-endian length, a payload -- because three
+/// things have to be told apart in one stream: `D`, bytes the child wrote; `E`, the end
+/// of the replay every attachment starts with, whose one byte says whether the replay
+/// was cut short at the front; and `X`, the child's exit status, after which there is
+/// nothing.
+#[derive(Debug)]
+struct Remote {
+    stream: OwnedFd,
+    decode: std::sync::Mutex<Decode>,
+    exit: std::sync::Mutex<Option<i32>>,
+    replay_end: std::sync::Mutex<Option<bool>>,
+}
+
+/// Where the reader is in the frame it is part-way through.
+#[derive(Debug, Default)]
+struct Decode {
+    /// A header, and after it the payload of a frame that is not data.
+    head: [u8; 5 + SMALL_FRAME],
+    have: usize,
+    /// Bytes of the current `D` frame not yet handed on.
+    data_left: usize,
+}
+
+impl Remote {
+    /// One step of reading: some of the child's output, or nothing yet, or the end.
+    ///
+    /// The same three answers [`Pty::read`] gives for a master, so the reader thread
+    /// cannot tell which it has: `Some(bytes)`, `None` for "not now", and an empty
+    /// slice for "never again" -- by which time `exit` says how it ended.
+    fn read<'b>(&self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>> {
+        let mut decode = self.decode.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if decode.data_left > 0 {
+                let want = decode.data_left.min(buf.len());
+                return match nix::unistd::read(self.stream.as_fd(), &mut buf[..want]) {
+                    Ok(0) | Err(Errno::ECONNRESET | Errno::EPIPE) => Ok(Some(self.lost(buf))),
+                    Ok(n) => {
+                        decode.data_left -= n;
+                        Ok(Some(&buf[..n]))
+                    }
+                    Err(Errno::EINTR) => continue,
+                    Err(Errno::EAGAIN) => Ok(None),
+                    Err(e) => Err(e.into()),
+                };
+            }
+            let (tag, payload) = if decode.have < 5 {
+                (0, 0)
+            } else {
+                let head = &decode.head;
+                (
+                    head[0],
+                    u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize,
+                )
+            };
+            if tag == b'D' {
+                decode.data_left = payload;
+                decode.have = 0;
+                continue;
+            }
+            if payload > SMALL_FRAME {
+                // Not a frame this end knows how to hold: a stream out of step.
+                return Ok(Some(self.lost(buf)));
+            }
+            let need = 5 + payload;
+            if decode.have < need {
+                let have = decode.have;
+                match nix::unistd::read(self.stream.as_fd(), &mut decode.head[have..need]) {
+                    Ok(0) | Err(Errno::ECONNRESET | Errno::EPIPE) => {
+                        return Ok(Some(self.lost(buf)));
+                    }
+                    Ok(n) => decode.have += n,
+                    Err(Errno::EINTR) => {}
+                    Err(Errno::EAGAIN) => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                }
+                continue;
+            }
+            decode.have = 0;
+            match tag {
+                b'E' => {
+                    let truncated = payload > 0 && decode.head[5] != 0;
+                    *self
+                        .replay_end
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(truncated);
+                    // Back to the caller before another byte is read, so that the
+                    // mark lands between the output on either side of it.
+                    return Ok(None);
+                }
+                b'X' if payload == 4 => {
+                    let head = &decode.head;
+                    let status = i32::from_be_bytes([head[5], head[6], head[7], head[8]]);
+                    *self.exit.lock().unwrap_or_else(PoisonError::into_inner) = Some(status);
+                    return Ok(Some(&buf[..0]));
+                }
+                // A frame for a later version of this end to understand.
+                _ => {}
+            }
+        }
+    }
+
+    /// The host is gone and did not say how the child did.
+    fn lost<'b>(&self, buf: &'b [u8]) -> &'b [u8] {
+        self.exit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(HOST_LOST);
+        &buf[..0]
+    }
 }
 
 /// The grace period `Drop`'s own `SIGHUP`-then-`SIGKILL` escalation gives at each step.
@@ -278,13 +407,65 @@ impl Pty {
         Ok(Self {
             master,
             child: Pid(child),
+            remote: None,
             reaped: std::sync::atomic::AtomicBool::new(false),
             reap_lock: std::sync::Mutex::new(()),
         })
     }
 
+    /// Take up a child that a host process is keeping; see `host.rs`.
+    ///
+    /// MASTER is the host's own master end, duplicated and passed over the socket, and
+    /// it is used for everything a master is used for except reading: input is written
+    /// to it, the window size is set on it, and the tty's modes are read from it,
+    /// exactly as for a child of our own. Output is the one thing that cannot be
+    /// shared that way -- a byte read from a pty is gone, and the host must see every
+    /// one to have something to show the next terminal that attaches -- so it is the
+    /// host that reads, and STREAM carries what it read.
+    pub(crate) fn attach(master: OwnedFd, stream: OwnedFd, child: Pid) -> Self {
+        Self {
+            // SAFETY: the descriptor is one the host opened with `posix_openpt` and
+            // sent as such; nothing else is ever put in the hello's control message.
+            master: unsafe { PtyMaster::from_owned_fd(master) },
+            child,
+            remote: Some(Remote {
+                stream,
+                decode: std::sync::Mutex::new(Decode::default()),
+                exit: std::sync::Mutex::new(None),
+                replay_end: std::sync::Mutex::new(None),
+            }),
+            reaped: std::sync::atomic::AtomicBool::new(false),
+            reap_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// The master end: where input goes and where the tty is asked about itself.
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
         self.master.as_fd()
+    }
+
+    /// Where output is read from, which is the master unless a host is reading it.
+    pub(crate) fn source(&self) -> BorrowedFd<'_> {
+        match &self.remote {
+            Some(remote) => remote.stream.as_fd(),
+            None => self.master.as_fd(),
+        }
+    }
+
+    /// Whether a host process owns the child, rather than this one.
+    pub(crate) fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Whether the host has just said its replay is over, and if so whether the replay
+    /// was cut short at the front. Answers once per replay: asking takes the answer.
+    pub(crate) fn take_replay_end(&self) -> Option<bool> {
+        let remote = self.remote.as_ref()?;
+        remote
+            .replay_end
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     pub(crate) fn pid(&self) -> Pid {
@@ -376,6 +557,9 @@ impl Pty {
     /// Read available output. `Ok(None)` means there was nothing to read after all;
     /// an empty slice means the child closed the slave end.
     pub(crate) fn read<'b>(&self, buf: &'b mut [u8]) -> Result<Option<&'b [u8]>> {
+        if let Some(remote) = &self.remote {
+            return remote.read(buf);
+        }
         loop {
             return match nix::unistd::read(self.master.as_fd(), buf) {
                 Ok(n) => Ok(Some(&buf[..n])),
@@ -417,13 +601,20 @@ impl Pty {
     /// wrong for a teardown: with `vim` or a pager in front the shell behind it heard
     /// nothing, sat out the grace period, and was then killed outright -- no history
     /// written, no exit trap run -- or outlived the buffer altogether.
+    ///
+    /// Nothing at all for a child a host is keeping. Letting go of such a child is all
+    /// that closing this end of it means, and the child is not to hear of it.
     pub(crate) fn hangup(&self) {
-        self.signal_all(Signal::SIGHUP);
+        if self.remote.is_none() {
+            self.signal_all(Signal::SIGHUP);
+        }
     }
 
     /// The last word, to the same two groups as [`Pty::hangup`].
     pub(crate) fn kill(&self) {
-        self.signal_all(Signal::SIGKILL);
+        if self.remote.is_none() {
+            self.signal_all(Signal::SIGKILL);
+        }
     }
 
     fn signal_all(&self, sig: Signal) {
@@ -464,6 +655,11 @@ impl Pty {
     /// reaped, which loses the real exit code; a blocking `waitpid` would deadlock
     /// teardown against a child that is not exiting at all. Hence a bounded wait.
     pub(crate) fn reap(&self, patience: std::time::Duration) -> Option<i32> {
+        if self.remote.is_some() {
+            // Not ours to wait for: the host reaps it and says how it went, and if it
+            // has not said so yet then waiting here will not make it.
+            return self.try_wait().ok().flatten();
+        }
         let deadline = std::time::Instant::now() + patience;
         loop {
             match self.try_wait() {
@@ -487,6 +683,13 @@ impl Pty {
         if self.reaped() {
             return Ok(None);
         }
+        if let Some(remote) = &self.remote {
+            let status = *remote.exit.lock().unwrap_or_else(PoisonError::into_inner);
+            if status.is_some() {
+                self.reaped.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return Ok(status);
+        }
         let collected = match waitpid(NixPid::from_raw(self.child.0), Some(flags))? {
             WaitStatus::Exited(_, code) => code,
             // The shell convention, and what `cooked-last-exit-code' renders.
@@ -509,7 +712,8 @@ impl Drop for Pty {
     /// the `SIGHUP` here would leak exactly the children `Session::shutdown` escalates to
     /// avoid, and which path a failure takes must not decide whether the child goes away.
     fn drop(&mut self) {
-        if self.child.0 <= 1 || self.reaped() {
+        // A child a host is keeping is not this end's to end.
+        if self.remote.is_some() || self.child.0 <= 1 || self.reaped() {
             return;
         }
         let _ = killpg(NixPid::from_raw(self.child.0), Signal::SIGHUP);

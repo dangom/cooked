@@ -529,6 +529,19 @@ There is no way back before then, and that is the honest cost: ZLE is still
 a line editor, so `C-a\=', `C-w\=' and the arrows all still work, but they
 are the shell\='s now.  It is vterm\='s ordinary state, entered on purpose
 and for one line.")
+(defvar-local cooked--replaying nil
+  "Non-nil while the drains arriving are a replay of output seen once already.
+
+A session attached to a host begins with what the child wrote before anyone was
+looking, sent again so that this buffer can be made to look as it would have.
+Those bytes are allowed to do that and nothing more.  Everything else a
+terminal does on a child\='s say-so was done, or declined, the first time: a
+report sent in answer now reaches the child as typed input, a bell rings for
+something an hour old, and a clipboard write or a command request would be
+carried out twice.  So while this is set, an event either rebuilds state or is
+dropped -- see `cooked--handle-event\=' -- and the `replay-end\=' event the
+core puts at the exact place the replay stops is what clears it.")
+
 (defvar-local cooked--completion-nonce nil
   "Nonce from the prompt\='s OSC 51;CH announcement, or nil if it did not announce.
 
@@ -2823,6 +2836,23 @@ filesystem already goes through, and its message is the one the user is told.
 
 Only when DIRECTORY is non-nil: nil keeps its own meaning of leaving the child
 wherever Emacs is, and is not a request to be second-guessed."
+  (cooked--begin
+   (lambda ()
+     (cooked--spawn argv (cooked--child-environment extra-env)
+                    cooked--rows cooked--cols cooked--wake
+                    (when directory
+                      (expand-file-name (or (cooked--local-name directory) "~")))
+                    (round (* 1000 cooked-min-redisplay-interval))
+                    cooked-backlog-limit))))
+
+(defun cooked--begin (connect)
+  "Make the current buffer a terminal on the session CONNECT returns.
+
+CONNECT is called with no arguments once the buffer is ready for a session --
+sized, emptied, with `cooked--wake\=' open for the session to be given -- and
+returns the handle.  Where the child comes from is the whole of what it
+decides: `cooked--start\=' spawns one, and cooked-host.el attaches to one that
+a host process is keeping.  Everything either side of that is the same."
   (cooked--load-module)
   (cooked--reset-images)
   ;; A layer that failed against the last child's output is worth hearing about
@@ -2875,12 +2905,7 @@ wherever Emacs is, and is not a request to be second-guessed."
   (set-marker-insertion-type (process-mark cooked--wake) nil)
   (cooked--sync-query-flag)
   (cooked--set-input-mark nil)
-  (setq cooked--session
-        (cooked--spawn argv (cooked--child-environment extra-env) cooked--rows cooked--cols cooked--wake
-                      (when directory
-                        (expand-file-name (or (cooked--local-name directory) "~")))
-                      (round (* 1000 cooked-min-redisplay-interval))
-                      cooked-backlog-limit))
+  (setq cooked--session (funcall connect))
   ;; Once, at the start: the core answers `CSI ? 996 n' from what Emacs last reported,
   ;; and a session that outlives no theme change would otherwise answer with silence for
   ;; its whole life.  Here rather than in `cooked--start-session' so that the callers who
