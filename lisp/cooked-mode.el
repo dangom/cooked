@@ -32,6 +32,7 @@
 (require 'cooked-scrollback)
 (require 'cooked-keys)
 (require 'cooked-navigate)
+(require 'cooked-dnd)
 (require 'cooked-completion)
 (require 'cooked-mouse)
 (require 'cooked-shell-integration)

@@ -76,7 +76,8 @@ its script.  nil turns navigation off."
     ("C-p" . previous-line)
     ("C-n" . next-line)
     ("M-p" . cooked-previous-input)
-    ("M-n" . cooked-next-input))
+    ("M-n" . cooked-next-input)
+    ("C-y" . cooked-paste))
   "Keys that keep their Emacs meaning while point is in a program's input.
 
 An alist of (KEY . COMMAND), KEY as `kbd' spells it.  Everywhere but the
@@ -85,13 +86,14 @@ program's input every key is Emacs' already; these are the way out of it.
 The default makes a program's input behave like a shell prompt in cooked or
 comint: \\`C-p' and \\`C-n' move by line, so \\`C-p' steps up into the
 output; \\`M-p' and \\`M-n' are the input history, sent to the program as
-the Up and Down keys it would have received for them in a terminal.  \\`M-v'
-and \\`M-<' are the other ways out.
+the Up and Down keys it would have received for them in a terminal.  \\`C-y'
+pastes Emacs' kill ring -- and so the clipboard -- as `yank' does everywhere
+else.  \\`M-v' and \\`M-<' are the other ways out.
 
 Every entry takes a key away from the program: a readline-based program loses
 \\`M-<' (beginning of history), and a program with its own \\`M-p' (an agent's
-model picker, say) loses that.  \\[cooked-send-literal-key] followed by the
-key still sends it."
+model picker, say) loses that, as does one with its own kill buffer on
+\\`C-y'.  \\[cooked-send-literal-key] followed by the key still sends it."
   :type '(alist :key-type (string :tag "Key") :value-type (function :tag "Command"))
   :set (lambda (symbol value)
          (set-default symbol value)

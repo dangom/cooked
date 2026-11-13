@@ -393,6 +393,21 @@ The ghost keeps the way back visible; `cooked--snap-to-cursor' takes it."
           ((cooked-viewport-follow viewport)
            (goto-char (cooked--point-after-input))))))
 
+(defun cooked--restore-scroll-settings ()
+  "Put back the scroll settings `cooked-mode' gave this buffer, if they moved.
+
+The window is positioned by `cooked--pin-transcript-bottom', and redisplay only
+leaves that alone while `scroll-conservatively' is above 100 and
+`scroll-margin' is 0.  With anything less it recentres whenever output moves
+the cursor further than that, and the prompt lurches to the middle of the
+window.  Packages that tune scrolling change these globals for the duration of
+a scroll and `setq' them back from a timer, in whatever buffer is current when
+it fires -- ultra-scroll does exactly that -- which writes another buffer's
+value over this buffer's own.  Checked once per drain, two comparisons."
+  (unless (and (eql scroll-conservatively 101) (eql scroll-margin 0))
+    (setq-local scroll-conservatively 101
+                scroll-margin 0)))
+
 (defun cooked--scroll-windows (viewport)
   "Scroll every window on this buffer to what VIEWPORT and the new grid want.
 
@@ -409,6 +424,7 @@ output' gates comint's own recentring on.
 The selected window belongs in none of these lists unless it is actually showing
 this buffer: output can arrive while the user's focus is elsewhere, and
 scrolling that window would be a bug rather than a courtesy."
+  (cooked--restore-scroll-settings)
   (let ((here (and (eq (window-buffer (selected-window)) (current-buffer))
                    (list (selected-window))))
         (others (cooked-viewport-others viewport)))

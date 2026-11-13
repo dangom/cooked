@@ -303,5 +303,54 @@ gets every key back, and the buffer is not left read-only."
         (with-current-buffer buffer (cooked--cleanup))
         (kill-buffer buffer)))))
 
+(ert-deftest cooked-navigate-yank-at-the-input-pastes-the-kill-ring ()
+  "`C-y' at the input pastes Emacs' kill ring, as `yank' does everywhere else,
+rather than handing the program a control character."
+  (cooked-tests--with-navigable
+    (let ((kill-ring nil) (interprogram-paste-function nil))
+      (kill-new "hello")
+      (cooked-tests--keys "C-y"))
+    (should (string-match-p "b'hello'" (cooked-tests--text)))
+    (should-not (string-match-p (regexp-quote "b'\\x19'") (cooked-tests--text)))))
+
+(ert-deftest cooked-dnd-a-dropped-file-types-its-name ()
+  "A file dropped onto the buffer is not visited: its quoted path is typed at the
+program's input, the way a terminal does it."
+  (cooked-tests--with-navigable
+    (should (eq (cdr (assoc "\\`file:" dnd-protocol-alist)) 'cooked-dnd-insert-files))
+    (let ((buffer (current-buffer)))
+      (dnd-handle-multiple-urls (selected-window) (list "file:/tmp/paper.pdf") 'copy)
+      (should (eq (window-buffer (selected-window)) buffer)))
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "/tmp/paper\\.pdf " (cooked-tests--text)))))))
+
+(ert-deftest cooked-dnd-file-names-are-quoted-and-joined ()
+  "Several files at once, space-separated and quoted for a shell."
+  (should (equal (cooked-dnd--text '("/tmp/a.pdf" "/tmp/my paper.pdf"))
+                 (concat "/tmp/a.pdf " (shell-quote-argument "/tmp/my paper.pdf") " ")))
+  (should (equal (cooked-dnd--file-name "file:/Users/u/x.pdf") "/Users/u/x.pdf"))
+  (should (equal (cooked-dnd--file-name "file:///tmp/a%20b.pdf") "/tmp/a b.pdf"))
+  (should-not (cooked-dnd--file-name "https://example.com/x.pdf")))
+
+(ert-deftest cooked-dnd-at-a-shell-prompt-edits-the-pending-line ()
+  "At a prompt Emacs is editing, a drop goes into the pending input, unsent."
+  (cooked-tests--with-zsh
+    (should (cooked-tests--settle (lambda () (cooked--input-state-p))))
+    (cooked-dnd-insert-files (list "file:/tmp/paper.pdf") 'copy)
+    (should (equal (cooked--pending-input) "/tmp/paper.pdf "))))
+
+(ert-deftest cooked-scroll-settings-come-back-after-another-package-clobbers-them ()
+  "Regression: a scrolling package `setq'ing its saved global back from a timer
+in a cooked buffer left it at `scroll-conservatively' 10, and redisplay then
+recentred the window on every burst of output.  The next drain restores it."
+  (cooked-tests--with-navigable
+    (setq-local scroll-conservatively 10
+                scroll-margin 3)
+    (cooked--send cooked--session "q")
+    (should (cooked-tests--settle
+             (lambda () (string-match-p "b'q'" (cooked-tests--text)))))
+    (should (cooked-tests--settle (lambda () (eql scroll-conservatively 101))))
+    (should (eql scroll-margin 0))))
+
 (provide 'cooked-tests-navigate)
 ;;; cooked-tests-navigate.el ends here
