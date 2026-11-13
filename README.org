@@ -355,9 +355,11 @@ the keyboard on the main screen and has not asked for the mouse.
 
 Where point is decides who a key is for:
 
-- *On the program's input* — the row its cursor is on — every key is the program's, as in
-  any terminal, except =M-v= and =M-<=, which take you out into the output (see
-  ~cooked-navigation-keys~). A click or the mouse wheel does the same.
+- *On the program's input* — the row its cursor is on — it behaves like a shell prompt:
+  =C-p= / =C-n= move by line (so =C-p= steps up into the output), =M-p= / =M-n= are the
+  program's input history (sent as Up and Down), and =M-v= / =M-<= take you out too. Every
+  other key is the program's, as in any terminal (see ~cooked-navigation-keys~). A click or
+  the mouse wheel also takes you out.
 - *Anywhere else*, it is an ordinary read-only Emacs buffer: motion, isearch, the region,
   =M-w=, all of it, while the output keeps arriving underneath without moving the view.
   Scrolling up away from the input counts as leaving it.

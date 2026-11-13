@@ -60,14 +60,12 @@ With `cooked-navigable-programs' at its default: nothing names this program."
   (cooked-tests--settle (lambda () nil) 0.3))
 
 (ert-deftest cooked-navigate-keys-go-to-the-program-at-its-input ()
-  "At the input every key is the program's, as in a terminal: `C-p', `C-s' and
-`C-r' included."
+  "At the input every key but `cooked-navigation-keys' is the program's, as in a
+terminal: `C-s' and `C-r' included."
   (cooked-tests--with-navigable
     (should-not cooked-navigate--reading)
     (cooked-tests--keys "a")
     (should (string-match-p "b'a'" (cooked-tests--text)))
-    (cooked-tests--keys "C-p")
-    (should (string-match-p (regexp-quote "b'\\x10'") (cooked-tests--text)))
     (cooked-tests--keys "C-s")
     (should (string-match-p (regexp-quote "b'\\x13'") (cooked-tests--text)))
     (cooked-tests--keys "C-r")
@@ -86,6 +84,37 @@ ordinary read-only one, `C-n' is line motion, and nothing reaches the program."
     (cooked-tests--keys "C-n")
     (should (= (line-number-at-pos) 2))
     (should-not (string-match-p "b'" (cooked-tests--text)))))
+
+(ert-deftest cooked-navigate-line-motion-at-the-input-is-emacs ()
+  "`C-p' at the input is line motion, as at a shell prompt: it steps up into the
+output, and nothing reaches the program."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "C-p")
+    (should cooked-navigate--reading)
+    (should (string-match-p "\\`line 60" (buffer-substring (line-beginning-position)
+                                                           (line-end-position))))
+    (should-not (string-match-p (regexp-quote "b'\\x10'") (cooked-tests--text)))
+    (cooked-tests--keys "C-n")
+    (should-not cooked-navigate--reading)
+    (should (= (point) (cooked--cursor-position)))))
+
+(ert-deftest cooked-navigate-history-keys-send-up-and-down ()
+  "`M-p'/`M-n' are the input history, as at a shell prompt: the program is sent
+Up and Down, from the input and from the output alike."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-p")
+    (should (string-match-p (regexp-quote "b'\\x1b[A'") (cooked-tests--text)))
+    (cooked-tests--keys "M-n")
+    (should (string-match-p (regexp-quote "b'\\x1b[B'") (cooked-tests--text)))
+    (should-not cooked-navigate--reading)
+    (cooked-tests--keys "M-<")
+    (should cooked-navigate--reading)
+    (cooked-tests--keys "M-p")
+    (should-not cooked-navigate--reading)
+    (should (= (point) (cooked--cursor-position)))
+    ;; Two Ups now: the one from the input, and this one.
+    (should (= 3 (length (split-string (cooked-tests--text)
+                                       (regexp-quote "b'\\x1b[A'")))))))
 
 (ert-deftest cooked-navigate-typing-while-reading-goes-back-to-the-input ()
   "A character typed while reading lands in the program's input, like comint."

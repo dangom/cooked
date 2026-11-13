@@ -50,6 +50,8 @@
 
 (declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
 (declare-function cooked--policy "cooked" ())
+(declare-function cooked-previous-input "cooked-mode" (&optional n))
+(declare-function cooked-next-input "cooked-mode" (&optional n))
 
 (defcustom cooked-navigable-programs t
   "Which programs' output is read with ordinary Emacs commands while they run.
@@ -70,17 +72,26 @@ its script.  nil turns navigation off."
 
 (defcustom cooked-navigation-keys
   '(("M-v" . scroll-down-command)
-    ("M-<" . beginning-of-buffer))
+    ("M-<" . beginning-of-buffer)
+    ("C-p" . previous-line)
+    ("C-n" . next-line)
+    ("M-p" . cooked-previous-input)
+    ("M-n" . cooked-next-input))
   "Keys that keep their Emacs meaning while point is in a program's input.
 
 An alist of (KEY . COMMAND), KEY as `kbd' spells it.  Everywhere but the
 program's input every key is Emacs' already; these are the way out of it.
 
-Every entry takes a key away from the program, which in a terminal would have
-received it, so the default is the smallest set that still gets out: back a
-screen, and to the top.  A readline-based program loses \\`M-<'
-\(beginning of history) and \\`M-v' to this; \\[cooked-send-literal-key]
-followed by the key still sends it."
+The default makes a program's input behave like a shell prompt in cooked or
+comint: \\`C-p' and \\`C-n' move by line, so \\`C-p' steps up into the
+output; \\`M-p' and \\`M-n' are the input history, sent to the program as
+the Up and Down keys it would have received for them in a terminal.  \\`M-v'
+and \\`M-<' are the other ways out.
+
+Every entry takes a key away from the program: a readline-based program loses
+\\`M-<' (beginning of history), and a program with its own \\`M-p' (an agent's
+model picker, say) loses that.  \\[cooked-send-literal-key] followed by the
+key still sends it."
   :type '(alist :key-type (string :tag "Key") :value-type (function :tag "Command"))
   :set (lambda (symbol value)
          (set-default symbol value)
@@ -121,6 +132,8 @@ Built from `cooked-navigation-keys'.")
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'cooked-navigate-return)
     (define-key map (kbd "<return>") #'cooked-navigate-return)
+    (define-key map (kbd "M-p") #'cooked-navigate-previous-input)
+    (define-key map (kbd "M-n") #'cooked-navigate-next-input)
     map)
   "Keys for reading a navigable program's output, over `cooked-peek-map'.
 
@@ -262,6 +275,18 @@ Called at the end of `cooked--refresh-keymap'."
     (goto-char (cooked--cursor-position))
     (setq cooked--wandered nil)
     (cooked--refresh-keymap t)))
+
+(defun cooked-navigate-previous-input (&optional n)
+  "Go back to the program's input and recall the Nth previous input there."
+  (interactive "p")
+  (cooked-navigate-return)
+  (cooked-previous-input n))
+
+(defun cooked-navigate-next-input (&optional n)
+  "Go back to the program's input and recall the Nth next input there."
+  (interactive "p")
+  (cooked-navigate-return)
+  (cooked-next-input n))
 
 (provide 'cooked-navigate)
 ;;; cooked-navigate.el ends here

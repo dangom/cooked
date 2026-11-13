@@ -1476,11 +1476,14 @@ mouse, and then navigation turns off and every key is the program's, which is wh
 terminal would do. A mouse-mode change refreshes the keymap for that reason
 (`cooked--set-mouse-state`).
 
-At the input every key is the program's except `cooked-navigation-keys`, by default
-`M-v` and `M-<`: the smallest set that gets out. An earlier version also took `C-v`,
-`C-s`, `C-r` and translated `C-p`/`C-n` to Up/Down; agent CLIs bind the first three
-themselves (image paste, stash, history search) and already treat `C-p`/`C-n` as Up/Down,
-so all of that was divergence from a terminal for nothing.
+At the input every key is the program's except `cooked-navigation-keys`. By default those
+make the input behave like cooked's own shell prompt, so one set of habits covers both:
+`C-p`/`C-n` are line motion (and `C-p` is therefore a way out into the output), `M-p`/`M-n`
+are history, sent as Up/Down -- the keys a terminal would have sent for it, so the history
+is the program's own -- and `M-v`/`M-<` get out. `M-p`/`M-n` do the same from the output,
+returning to the input first. That takes a few keys from the program (an agent's own
+`M-p`, readline's `M-<`), all reachable with `C-c C-q`. `C-v`, `C-s` and `C-r` stay the
+program's: agent CLIs bind them (image paste, stash, history search).
 
 ## `cooked-navigate--reading`: a flag set by commands, not a position
 
