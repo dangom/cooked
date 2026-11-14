@@ -258,14 +258,22 @@ live output; the drain re-pins point (see `cooked--apply\='), and nothing ever
 did the same for the mark.  Every xterm-family terminal drops a selection whose
 cells are overwritten, for the reason this does.
 
-Only a mark in the live screen.  The scrollback is text the child has finished
-with and can no longer reach, so a region up there still means what it did when
-it was drawn.
+Only a region whose text was actually rewritten.  Output elsewhere -- a
+spinner, a status line, the next line of a log -- leaves a selection alone: the
+selected text is compared across the redraw, and kept when it is still exactly
+what was selected.  The scrollback is text the child has finished with and can
+no longer reach, so a region up there always means what it did when it was
+drawn.
 
 nil keeps the mark wherever it is.  Defensible if you never select the live
 screen; if you do, the region you are left holding is not the one you drew."
   :type 'boolean
   :group 'cooked)
+
+(defconst cooked--stale-mark-compare-limit 200000
+  "Largest selection, in characters, compared across a redraw.
+A larger one is dropped whenever output arrives rather than copied every
+drain; see `cooked-clear-selection-on-output'.")
 
 (defun cooked--following-windows ()
   "Other windows on this buffer whose point should track the child's cursor.
@@ -341,12 +349,14 @@ The screen cell point sat on, when it had wandered off the cursor.
 A redraw deletes and reinserts whole rows, so a buffer position would be dragged
 to the start of whatever was rebuilt under it.  The cell survives that.")
   (stale-mark nil :documentation "\
-Whether an active mark named screen text this drain is about to rewrite.
+The selected text, when an active region reaches into the live screen.
 
 Unlike point the mark cannot be re-found afterwards -- there is no cell to look
-it up by, only a claim about text that is about to stop being that text -- so
-the question is asked while it still has an answer.  See
-`cooked-clear-selection-on-output'.")
+it up by, only a claim about text -- so the claim is written down while it
+still has an answer, and checked after the render: a region still covering
+exactly this text was not rewritten and stays; anything else is dropped.  t
+for a region too large to compare, which is dropped whenever output arrives.
+See `cooked-clear-selection-on-output'.")
   (others nil :documentation "\
 The other windows on this buffer that were following the child's cursor.")
   (held nil :documentation "\
@@ -369,7 +379,11 @@ instead and carried across the scroll; see `cooked--map-cell'."))
    :wandered (and cooked--wandered (cooked--screen-cell))
    :stale-mark (and cooked-clear-selection-on-output
                     mark-active (mark)
-                    (>= (mark) (cooked--screen-start-position)))
+                    (>= (max (mark) (point)) (cooked--screen-start-position))
+                    (let ((beg (min (mark) (point))) (end (max (mark) (point))))
+                      (if (> (- end beg) cooked--stale-mark-compare-limit)
+                          t
+                        (buffer-substring-no-properties beg end))))
    :others (cooked--following-windows)
    :held (cooked--held-windows)))
 
@@ -678,7 +692,11 @@ and the region shaped before anything measures it."
     ;; Before the point block, not after it: under evil this leaves visual state,
     ;; and evil adjusts point on the way into normal state -- so cooked's own pin
     ;; has to be the last thing to speak about where point ends up.
-    (when (cooked-viewport-stale-mark viewport) (cooked--deactivate-mark))
+    (when-let* ((selected (cooked-viewport-stale-mark viewport)))
+      (unless (and (stringp selected) mark-active (mark)
+                   (equal selected (buffer-substring-no-properties
+                                    (min (mark) (point)) (max (mark) (point)))))
+        (cooked--deactivate-mark)))
     (cooked--place-point viewport)
     (cooked--restore-held-windows viewport)
     ;; Recorded, not merely left in the buffer: a window not showing this buffer

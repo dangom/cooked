@@ -365,5 +365,42 @@ recentred the window on every burst of output.  The next drain restores it."
     (should (cooked-tests--settle (lambda () (eql scroll-conservatively 101))))
     (should (eql scroll-margin 0))))
 
+(ert-deftest cooked-a-click-reaches-emacs-while-a-program-owns-the-keyboard ()
+  "Regression: with the program reading every key, the forwarding map binds the
+mouse too, and the fallback's \"what would Emacs do\" lookup found cooked's own
+handler there and did nothing -- a click placed no point and a drag selected
+nothing.  The lookup now answers with Emacs' own bindings."
+  (cooked-tests--with-navigable
+    (should (eq (lookup-key (current-local-map) [mouse-1]) #'cooked-mouse-event))
+    (should (memq (cooked--mouse-fallback-command [down-mouse-1] nil)
+                  '(mouse-drag-region)))
+    (should (eq (cooked--mouse-fallback-command [mouse-1] nil) #'mouse-set-point))
+    ;; And the lookup leaves the buffer's own map as it found it.
+    (should (eq (lookup-key (current-local-map) [mouse-1]) #'cooked-mouse-event))))
+
+(ert-deftest cooked-a-selection-survives-output-that-does-not-touch-it ()
+  "A selection on the live screen is dropped only when its own text is redrawn:
+output on another row -- an agent's spinner, the next line of its reply --
+leaves it alone, so a region dragged over a program's output can be copied
+while the program keeps working."
+  (cooked-tests--with-navigable
+    (let ((beg (save-excursion (goto-char (point-min))
+                               (re-search-forward "^line 58$") (match-beginning 0)))
+          (end (save-excursion (goto-char (point-min))
+                               (re-search-forward "^line 59$") (match-end 0))))
+      (should (>= beg (cooked--screen-start-position)))
+      ;; Leave the input first, as the click or drag that makes a selection does.
+      (cooked-tests--keys "M-<")
+      (should cooked-navigate--reading)
+      (goto-char end)
+      (set-mark beg)
+      (activate-mark)
+      (cooked--send cooked--session "q")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "b'q'" (cooked-tests--text)))))
+      (should mark-active)
+      (should (equal (buffer-substring-no-properties (region-beginning) (region-end))
+                     "line 58\nline 59")))))
+
 (provide 'cooked-tests-navigate)
 ;;; cooked-tests-navigate.el ends here

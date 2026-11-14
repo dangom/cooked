@@ -199,6 +199,7 @@ reader.")
   "What the child last asked for about the mouse; see `cooked-mouse-state'.")
 
 (declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
+(defvar cooked-mode-map)
 
 (defun cooked--set-mouse-state (enabled sgr drag motion)
   "Adopt ENABLED, SGR, DRAG and MOTION, and re-gate the keymap.
@@ -571,14 +572,38 @@ property and the local map consulted are the ones under the *pointer*.  Emacs
 settles a click\='s binding in the buffer the pointer is over and then runs it in
 the buffer that was current, and that is the half of the question a plain
 `lookup-key\=' cannot even ask."
-  (let* ((emulation-mode-map-alists
-          (remq 'cooked--mouse-map-alist emulation-mode-map-alists))
-         (command (key-binding (this-command-keys-vector) nil nil
-                               (and (consp event) (event-start event)))))
+  (let* ((posn (and (consp event) (event-start event)))
+         (command (cooked--mouse-fallback-command (this-command-keys-vector) posn)))
     (when (and (commandp command) (not (eq command #'cooked-mouse-event)))
       (setq last-command-event event
             this-command command)
       (call-interactively command))))
+
+(defun cooked--mouse-fallback-command (keys posn)
+  "What KEYS, a mouse event at POSN, would run if cooked had not claimed it.
+See `cooked--mouse-fallback'."
+  (let ((buffer (or (and posn (windowp (posn-window posn))
+                         (window-buffer (posn-window posn)))
+                    (current-buffer)))
+        (emulation-mode-map-alists
+         (remq 'cooked--mouse-map-alist emulation-mode-map-alists)))
+    ;; The forwarding map a child that owns the keyboard is given binds every
+    ;; mouse event here too -- see `cooked--build-passthrough-map' -- and it is
+    ;; that buffer's local map, which removing the emulation entry does not
+    ;; reach.  Asked with it in place, the lookup found this command again and
+    ;; the click did nothing: no point placed, no region dragged, in exactly the
+    ;; buffer where a program is running and its output most wants reading.  So
+    ;; the question is asked of `cooked-mode-map' instead, which binds no mouse
+    ;; event and is what the forwarding map stands in front of.
+    (with-current-buffer buffer
+      (let ((local (current-local-map)))
+        (unwind-protect
+            (progn
+              (when (and (keymapp local) (not (eq local cooked-mode-map))
+                         (eq (lookup-key local keys) #'cooked-mouse-event))
+                (use-local-map cooked-mode-map))
+              (key-binding keys nil nil posn))
+          (use-local-map local))))))
 
 (provide 'cooked-mouse)
 ;;; cooked-mouse.el ends here
