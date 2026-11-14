@@ -234,6 +234,24 @@ gets every key back, and the buffer is not left read-only."
     (cooked--refresh-keymap)
     (should-not cooked-navigate--applies)))
 
+(ert-deftest cooked-shell-line-editor-shell-gives-zsh-its-line ()
+  "With `cooked-shell-line-editor' set to `shell', a marked prompt is the shell's:
+keys go to zsh's line editor (so its plugins run), Emacs does not lift the line
+into an input region, and the output around it reads like any program's."
+  (let ((cooked-shell-line-editor 'shell))
+    (cooked-tests--with-shell ("zsh" :settle (lambda () (eq (cooked--policy) 'prompt)))
+      (switch-to-buffer (current-buffer))
+      (should-not (cooked--input-state-p))
+      (cooked--refresh-keymap)
+      (should cooked-navigate--applies)
+      ;; Typed keys reach zsh, which echoes them in its own line.
+      (cooked-tests--keys "e c h o SPC h i")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "echo hi" (cooked-tests--text)))))
+      (cooked-tests--keys "RET")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "^hi$" (cooked-tests--text))))))))
+
 (ert-deftest cooked-program-name-is-argv-zero ()
   "argv[0]'s basename: what was typed, or what a wrapper exec'd."
   ;; The native installer: a versioned file behind an `agent' symlink.

@@ -515,6 +515,25 @@ Latched, because `cooked--semantic' goes back to nil between `command-end' and
 the next `prompt-start' and so cannot answer \"is the integration working?\".
 Once a shell has spoken at all, it will keep speaking, and everything it does
 not say becomes informative -- see `cooked--policy'.")
+(defcustom cooked-shell-line-editor 'emacs
+  "Who edits the command line at a shell's marked prompt.
+
+`emacs', the default: Emacs owns the line.  It is ordinary buffer text, edited
+with Emacs' commands, recalled with \\[cooked-previous-input] and completed with
+\\[completion-at-point]; nothing is sent until RET.
+
+`shell': the shell's own line editor keeps it, as in any terminal -- every key
+goes to it, so its plugins work (zsh-autosuggestions, syntax highlighting, fzf
+widgets) along with its own completion and bindings.  The prompt is then the
+`prompt' state a delegated line is in (see `cooked-delegate-keys'), for every
+line rather than one, and the output around it reads like any program's: see
+`cooked-navigation-keys' for the keys that stay Emacs' at the input.  Command
+records, exit codes and `next-error' work the same either way; they come from
+the shell's marks, not from who edited the line."
+  :type '(choice (const :tag "Emacs edits the line" emacs)
+                 (const :tag "The shell's own line editor" shell))
+  :group 'cooked)
+
 (defvar-local cooked--delegated nil
   "Whether this line has been handed to the child\='s own line editor.
 
@@ -638,6 +657,7 @@ extents, exit codes, `next-error\=', rerun -- works there unchanged."
         ;; only a claim, so it takes the keyboard only with a license behind it.
         ((and (eq cooked--semantic 'input)
               (not cooked--delegated)
+              (not (eq cooked-shell-line-editor 'shell))
               (cooked--ownership-license))
          'cooked)
         ((eq cooked--mode 'cooked) 'cooked)

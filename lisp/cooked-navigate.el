@@ -50,6 +50,7 @@
 
 (declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
 (declare-function cooked--policy "cooked" ())
+(defvar cooked-shell-line-editor)
 (declare-function cooked-previous-input "cooked-mode" (&optional n))
 (declare-function cooked-next-input "cooked-mode" (&optional n))
 (declare-function cooked-dock-select-input "cooked-dock" ())
@@ -59,7 +60,8 @@
 
 t, the default, is every program that owns the keyboard on the main screen
 and has not asked for the mouse; see the commentary of cooked-navigate.el.  A
-shell editing its own marked prompt is never included: Emacs owns that line
+shell at its own marked prompt is included only when
+`cooked-shell-line-editor' is `shell'; otherwise Emacs owns that line
 already.
 
 A list of regexps narrows that to the programs one of them matches, by name
@@ -186,7 +188,10 @@ Terminal state only: a live child that owns the keyboard, on the main screen,
 that has not asked for mouse reports."
   (and cooked--session
        (not cooked--alt)
-       (memq (cooked--policy) '(raw command))
+       (memq (cooked--policy)
+             (if (eq cooked-shell-line-editor 'shell)
+                 '(raw command prompt)
+               '(raw command)))
        (not (cooked-mouse-state-enabled cooked--mouse-state))
        (cooked-navigate--program-p)))
 
