@@ -445,6 +445,13 @@ what you run:
 - *The minibuffer does not resize it.*  A completion UI opening takes lines from the
   window above and gives them back; cooked waits until it closes rather than making a
   full-screen program redraw twice.  See ~cooked-defer-resize-in-minibuffer~.
+- *A shorter window does not shorten a program drawing inline.*  An agent's chat or a
+  REPL redraws a live region at the bottom of its output, and once that region is
+  taller than the screen its top rows scroll away where nothing can erase them — every
+  redraw then leaves another copy in the scrollback.  A split below the window would
+  do exactly that, so while a program draws on the main screen a shrink in height is
+  held back until it takes the alternate screen or exits; growing, and any change of
+  width, go through at once.  See ~cooked-defer-resize-on-main-screen~.
 - *Glyphs from fallback fonts are fitted to the cell.*  A character your default font
   lacks is drawn from another font at that font's metrics, which makes its row a few
   pixels taller than the rest — and the rows under it move every time a spinner changes

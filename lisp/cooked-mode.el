@@ -976,6 +976,12 @@ are the ones left standing."
       (cooked--clear-input-region))
     (cooked--update-mouse-grab)
     (cooked-navigate--update-maps)
+    ;; A size held back while the child drew inline is owed to it once that has
+    ;; stopped: it took the alternate screen, or exited to a prompt.  Asked again
+    ;; rather than assumed, so a refresh that changes nothing relevant holds it.
+    (when (and cooked--resize-deferred cooked--session
+               (get-buffer-window (current-buffer) t))
+      (cooked--sync-size))
     ;; Here rather than on a drain: this asks what the child is running, and a
     ;; program starting or exiting is exactly what moves the policy that brought
     ;; us here.
@@ -1141,9 +1147,11 @@ the trigger for `cooked--rescale-deco\='."
     (pcase-let* ((`(,rows . ,cols) (cooked--window-size))
                  (cell (cooked--session-cell-size))
                  (moved (not (equal cooked--last-cell cell)))
-                 (resized (not (equal cooked--last-size (cons rows cols)))))
-      (unless (or (and (not resized) (not moved))
-                  (cooked--resize-deferred-p rows cols moved))
+                 (resized (not (equal cooked--last-size (cons rows cols))))
+                 (deferred (and (or resized moved)
+                                (cooked--resize-deferred-p rows cols moved))))
+      (setq cooked--resize-deferred deferred)
+      (unless (or (and (not resized) (not moved)) deferred)
         (setq cooked--last-size (cons rows cols)
               cooked--last-cell cell
               cooked--rows rows
@@ -1199,17 +1207,57 @@ another width is wrong, not merely cropped."
   :type 'boolean
   :group 'cooked)
 
+(defcustom cooked-defer-resize-on-main-screen t
+  "Whether an inline program keeps its height when its window shrinks.
+
+A program that owns the keyboard but draws inline -- an agent's chat, a REPL --
+redraws a live region at the bottom of what it has printed: an input box, a
+spinner, a menu, a dialog.  It erases its previous frame by moving the cursor up
+over it, and the cursor cannot go above the top of the screen: once that region
+is taller than the screen, its top rows have already scrolled into the
+scrollback, nothing can erase them, and every redraw leaves another copy of them
+there.  Claude Code's slash-command menu in a nine-row terminal leaves fragments
+of its input box and of its banner behind this way; in a twenty-row one it
+leaves nothing.  Some programs repaint far more on a resize itself -- Claude
+Code's classic renderer can print the whole conversation again from its first
+line -- and every such repaint has the same chance to overflow.
+
+Any terminal does this when it is that short.  What makes it common here is that
+an Emacs window gets that short all the time: a split below it, a side window,
+a layout that gives the agent a third of the frame.  With this on, a window that
+gets shorter while a program is drawing inline does not make the program's
+screen shorter.  Nothing is lost by it: the window follows the screen's bottom
+row, so a screen taller than the window only decides how much of it shows,
+and the rest is above, where scrolling reaches it.  A window that gets taller
+is passed on at once, since more room is never a reason to overflow.
+
+The held-back height is passed on the moment the program stops drawing inline
+-- it takes the alternate screen, which does need the exact size, or exits back
+to a prompt.  A change in width is always passed on at once: text laid out for
+another width is wrong, not merely cropped."
+  :type 'boolean
+  :group 'cooked)
+
+(defvar-local cooked--resize-deferred nil
+  "Whether the window's size differs from the child's because it was held back.
+Set by `cooked--sync-size'; `cooked--refresh-keymap' retries when it is set,
+since a change of state is what ends every reason to hold a size back.")
+
 (defun cooked--resize-deferred-p (rows cols moved)
-  "Whether a move to ROWS by COLS should wait for the minibuffer to close.
+  "Whether a move to ROWS by COLS should be held back for now.
 
 MOVED is whether the cell size changed, which is never deferred: that is a zoom
-or a font change, not a window giving up lines.  See
-`cooked-defer-resize-in-minibuffer'."
-  (ignore rows)
-  (and cooked-defer-resize-in-minibuffer
-       (not moved)
+or a font change, not a window giving up lines.  Neither is a change of width.
+See `cooked-defer-resize-in-minibuffer' and
+`cooked-defer-resize-on-main-screen'."
+  (and (not moved)
        (eql cols cooked--cols)
-       (> (minibuffer-depth) 0)))
+       (or (and cooked-defer-resize-in-minibuffer
+                (> (minibuffer-depth) 0))
+           (and cooked-defer-resize-on-main-screen
+                (< rows cooked--rows)
+                (not cooked--alt)
+                (memq (cooked--policy) '(raw command))))))
 
 (defun cooked--minibuffer-exited ()
   "Bring every session's size up to date once the minibuffer has closed.

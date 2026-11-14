@@ -1516,6 +1516,45 @@ global one, so the dock's post-command is buffer-local at depth 60, after naviga
 As a global hook it ran first, and navigate then read the switch between the dock and the
 window above it as a scroll and undid it.
 
+## Inline programs keep their height when the window shrinks
+
+Copies of an agent's conversation -- its banner, the border of its input box, a prompt --
+turned up part-way down the buffer. The obvious suspect was `CSI 2 J`/`CSI 3 J`
+(clear screen, clear scrollback) with a repaint behind it, which a terminal honours and
+cooked might not. A recorded session of Claude Code's classic renderer has neither: on a
+resize it sends `CSI H`, then `CSI 2K CSI 1B` once per screen row, then reprints what it
+drew. And cooked already discards scrollback on `CSI 3 J`.
+
+What duplicates is the ordinary inline-renderer failure. Such a program redraws a live
+region at the bottom of its output by moving the cursor up over its previous frame and
+writing the next one. The cursor stops at the top of the screen, so once that region is
+taller than the screen, its top rows have already scrolled into the scrollback where no
+escape sequence reaches them, and each redraw adds another copy. A resize is a redraw, and
+in one case (the conversation only just taller than the screen) Claude Code reprints all
+of it, banner included. Every terminal behaves this way at that height; terminal windows
+just seldom get that short, and Emacs windows do all the time.
+
+Measured with the real program in a cooked session, a full window split to nine rows
+mid-session and the slash-command menu opened three times: the banner's directory line
+four times in the buffer and five input-box borders, against one and two once the shrink
+was held. Height-only and width-only resizes of a session already well into its
+scrollback produced no copies at all, which is why the hold is about shrinking and not
+about resizes in general.
+
+So `cooked-defer-resize-on-main-screen`: while a program owns the keyboard on the main
+screen (`raw` or `command` policy, not the alternate screen), a shrink in height is not
+passed on. The screen is then taller than the window, which costs nothing here -- the
+window follows the bottom row, and the rest is above it where scrolling reaches it.
+Growing is passed on at once, as is any change of width or cell size: more room never
+overflows anything, and text laid out for another width is wrong rather than cropped. The
+size owed is delivered by `cooked--refresh-keymap`, which every change of state passes
+through: the program taking the alternate screen (which needs the exact size) or exiting
+to a prompt. It is the minibuffer rule (`cooked-defer-resize-in-minibuffer`) generalised,
+and shares its function.
+
+Not covered: a session *started* in a window already that short, and a width change while
+the conversation is only just taller than the screen. Both duplicate in any terminal.
+
 ## Holding a reader's place while the screen scrolls
 
 On a main screen that keeps scrolling -- an agent appending its transcript -- a window
