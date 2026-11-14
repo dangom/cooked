@@ -211,13 +211,7 @@ a rule that matched some other part of the line from contributing numbers."
   "Open the file under point, if there is one.  `cooked-link-follow-functions'."
   (when-let* ((found (cooked-file-link--at-point)))
     (pcase-let ((`(,file ,line ,col) found))
-      (funcall cooked-file-link-display file)
-      (when line
-        (goto-char (point-min))
-        (forward-line (1- line))
-        (when col
-          (move-to-column col)))
-      t)))
+      (cooked--open-file file line col cooked-file-link-display))))
 
 (defun cooked-file-link-scan (beg end)
   "Highlight existing file names between BEG and END.

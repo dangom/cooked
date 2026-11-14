@@ -274,6 +274,34 @@ and a `file:' naming a remote host to TRAMP."
             (should (cooked--run-seam-until-success 'cooked-link-follow-functions))
             (should (string-suffix-p "lisp/cooked-link.el" visited))))))))
 
+(ert-deftest cooked-file-open-function-decides-how-a-file-opens ()
+  "A buffer that sets `cooked-file-open-function' is handed the file, line and
+column; one that does not opens it the ordinary way."
+  (cooked-tests--with-file-links
+    (let ((root (file-name-directory
+                 (directory-file-name
+                  (file-name-directory (locate-library "cooked-link"))))))
+      (with-temp-buffer
+        (setq-local default-directory root)
+        (insert "lisp/cooked-link.el:12:3: warning: nothing\n")
+        (goto-char (point-min))
+        (let (asked visited)
+          (setq-local cooked-file-open-function
+                      (lambda (file line col) (setq asked (list file line col)) t))
+          (cl-letf (((symbol-function 'find-file-other-window)
+                     (lambda (file) (setq visited file))))
+            (should (cooked--run-seam-until-success 'cooked-link-follow-functions))
+            (should (string-suffix-p "lisp/cooked-link.el" (car asked)))
+            (should (equal (cdr asked) '(12 3)))
+            (should-not visited)
+            ;; A function that declines leaves the ordinary way to it.
+            (setq-local cooked-file-open-function #'ignore)
+            (cl-letf (((symbol-function 'find-file-other-window)
+                       (lambda (file) (setq visited file)
+                         (set-buffer (get-buffer-create " *visit*")))))
+              (should (cooked--run-seam-until-success 'cooked-link-follow-functions)))
+            (should (string-suffix-p "lisp/cooked-link.el" visited))))))))
+
 (ert-deftest cooked-file-link-scan-stops-on-a-foreign-host ()
   "A build log from a remote tree is full of names that exist here too, at the
 same paths, in a checkout that did not produce the log.  The link would open,

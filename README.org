@@ -259,7 +259,10 @@ of from Emacs' own completion table — so =git checkout <TAB>= offers branches 
 ** cooked-file-link
 
 Turns file names that appear in a command's output into clickable links, the way
-=compilation-mode= does for error output.
+=compilation-mode= does for error output.  How a followed file opens is
+~cooked-file-link-display~, or, in a buffer that sets it, ~cooked-file-open-function~ --
+which is how a package that owns some cooked buffers can open their files its own way
+(coterie previews an agent's in a pop-up) while every other terminal keeps the default.
 
 ** cooked-next-error
 

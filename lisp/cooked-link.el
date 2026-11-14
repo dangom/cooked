@@ -123,6 +123,32 @@ Empty by default: this is the seam `cooked-file-link.el' adds itself to for
 local-file linking, and with that file not loaded there is nothing on the hook
 and no second switch that could disagree with its absence.")
 
+(defvar-local cooked-file-open-function nil
+  "When non-nil, how a file named in this buffer's output is opened.
+
+Called with FILE, LINE and COLUMN (either of the last two nil) for a file name
+followed from the output -- a plain path `cooked-file-link.el' recognised or a
+`file:' `OSC 8' link -- and returns non-nil if it opened it.  nil, the
+default, opens it the ordinary way: `cooked-file-link-display' for a path,
+`find-file-other-window' for a link.
+
+Buffer-local, so that a package which owns some cooked buffers can show their
+files its own way -- in a preview, say -- while every other terminal keeps
+the default.")
+
+(defun cooked--open-file (file line col default)
+  "Open FILE at LINE and COL, through `cooked-file-open-function' if it is set.
+Otherwise with DEFAULT, a function of one argument, then moving to LINE and
+COL."
+  (unless (and cooked-file-open-function
+               (funcall cooked-file-open-function file line col))
+    (funcall default file)
+    (when line
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (when col (move-to-column col))))
+  t)
+
 (defvar cooked-link-scan-functions nil
   "Abnormal hook run over each batch of output that has settled into scrollback.
 
@@ -219,8 +245,7 @@ Says where it is going either way, because the link's own text does not."
                  (and (let ((cooked--host host)) (not (cooked--foreign-host-p)))
                       (when-let* ((name (cooked--local-name path)))
                         (message "cooked: visiting %s" name)
-                        (find-file-other-window name)
-                        t))))
+                        (cooked--open-file name nil nil #'find-file-other-window)))))
           t
         (user-error "cooked: not following `%s' (not a local file)" uri)))
      (t
