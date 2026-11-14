@@ -174,6 +174,82 @@ from inside one of them."
   (message "cooked: wrapped lines %s"
            (if cooked-rejoin-wrapped-lines "rejoin" "stay split")))
 
+(defcustom cooked-copy-unwrap nil
+  "Whether text copied out of this buffer has the program's own wrapping undone.
+
+`cooked-rejoin-wrapped-lines' undoes the terminal's wrapping, which the emulator
+knows about.  A program that lays out prose itself -- an agent's chat -- breaks
+its paragraphs with newlines of its own and indents every continuation to where
+the text began, and a copy of that pastes as a ragged column.  Non-nil runs what
+is copied through `cooked-unwrap-text': kills, `kill-ring-save', the mouse's
+selection.  Nil by default because only such a program wants it; set it
+buffer-locally where one runs."
+  :type 'boolean :group 'cooked)
+
+(defconst cooked--unwrap-markers "⏺⎿●"
+  "Characters a program puts before a message in place of its indentation.")
+
+(defun cooked--unwrap-protected-p (line)
+  "Whether LINE is laid out by column and must keep its own line breaks."
+  (string-match-p "\\`[ \t]*\\(?:[|│┃┆╎]\\|```\\|[─━═]\\{3\\}\\)\\|[│┃]" line))
+
+(defun cooked--unwrap-text-column (line)
+  "The column LINE's text starts at: past its indent and any list marker."
+  (if (string-match "\\` *\\(?:[-*+]\\|[0-9]+[.)]\\) +" line)
+      (string-width (match-string 0 line))
+    (string-match "\\` *" line)
+    (match-end 0)))
+
+(defun cooked-unwrap-text (text width)
+  "TEXT with the line breaks a program wrapped it at, at WIDTH columns, removed.
+
+A line is joined to the one above when it is indented exactly to where that
+line's text starts and its first word would not have fitted on that line --
+which is when a program wraps, and not when someone means a new line.  The
+common indentation goes, a message marker such as ⏺ counting as indentation;
+tables, box drawing and fenced code are left exactly as they are."
+  (let* ((marker (format "\\`\\( *\\)[%s] " cooked--unwrap-markers))
+         (lines (mapcar (lambda (line)
+                          (string-trim-right
+                           (if (string-match marker line)
+                               (replace-match (make-string (length (match-string 0 line)) ?\s)
+                                              t t line)
+                             line)))
+                        (split-string text "\n")))
+         (indent (apply #'min most-positive-fixnum
+                        (mapcar (lambda (line)
+                                  (string-match "\\` *" line)
+                                  (match-end 0))
+                                (seq-remove #'string-empty-p lines))))
+         (indent (if (= indent most-positive-fixnum) 0 indent))
+         (fence nil) (prev nil) (out nil))
+    (dolist (line lines)
+      (let* ((fence-line (string-match-p "\\`[ \t]*```" line))
+             (word (and (string-match "\\` *\\([^ ]+\\)" line)
+                        (match-string 1 line)))
+             (column (and word (- (match-end 0) (length word)))))
+        (if (and prev word (not fence) (not fence-line)
+                 (not (string-empty-p prev))
+                 (not (cooked--unwrap-protected-p line))
+                 (not (cooked--unwrap-protected-p prev))
+                 (not (string-match-p "\\` *\\(?:[-*+]\\|[0-9]+[.)]\\) " line))
+                 (= column (cooked--unwrap-text-column prev))
+                 (> (+ (string-width prev) 1 (string-width word)) (- width 4)))
+            (setcar out (concat (car out) " " (string-trim-left line)))
+          (push (if (>= (length line) indent) (substring line indent) line) out))
+        (when fence-line (setq fence (not fence)))
+        (setq prev line)))
+    (string-join (nreverse out) "\n")))
+
+(defun cooked--copy-unwrap-filter (filter beg end &optional delete)
+  "Unwrap a copy per `cooked-copy-unwrap'.
+Around `filter-buffer-substring-function', calling FILTER with BEG, END and
+DELETE."
+  (let ((text (funcall filter beg end delete)))
+    (if (and cooked-copy-unwrap (not delete) cooked--session)
+        (cooked-unwrap-text text (cdr (cooked--window-size)))
+      text)))
+
 (defcustom cooked-shell (or (bound-and-true-p explicit-shell-file-name) shell-file-name)
   "Program run by \\[cooked]."
   :type 'string :group 'cooked)
@@ -2126,6 +2202,8 @@ to the child verbatim."
   ;; After navigation, which decides whether this command left the bottom to
   ;; read: a scroll past the end is clamped only while still following.
   (add-hook 'post-command-hook #'cooked--clamp-overscroll 70 t)
+  (add-function :around (local 'filter-buffer-substring-function)
+                #'cooked--copy-unwrap-filter)
   ;; After `cooked--track-wandering', which it reads: whether point is in the
   ;; child's input decides whose the keys are.  See cooked-navigate.el.
   (add-hook 'pre-command-hook #'cooked-navigate--pre-command nil t)

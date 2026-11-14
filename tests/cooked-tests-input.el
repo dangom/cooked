@@ -3653,5 +3653,28 @@ state something the user can still see out of."
     (cooked-tests--type "v $ u")
     (should (equal "alpha" (cooked--pending-input)))))
 
+(ert-deftest cooked-unwrap-text-joins-what-a-program-wrapped ()
+  "A copy of an agent's reply pastes as paragraphs: wrapped continuations join
+the line they continue, and nothing laid out by column or meant as its own
+line is touched."
+  (should (equal (cooked-unwrap-text
+                  (concat "⏺ The smoke tests worked, and the overnight queue is running: it started at 23:52, should take about 7–9 hours, and logs\n"
+                          "  to the log.\n"
+                          "\n"
+                          "  1. Where the damage happens: your propagation idea holds. I built hybrid models where only some blocks are compressed\n"
+                          "     (60 facts):\n"
+                          "  | a | b |\n"
+                          "  | 1 | 2 |\n"
+                          "  data/\n"
+                          "  models.json")
+                  120)
+                 (concat "The smoke tests worked, and the overnight queue is running: it started at 23:52, should take about 7–9 hours, and logs to the log.\n"
+                         "\n"
+                         "1. Where the damage happens: your propagation idea holds. I built hybrid models where only some blocks are compressed (60 facts):\n"
+                         "| a | b |\n"
+                         "| 1 | 2 |\n"
+                         "data/\n"
+                         "models.json"))))
+
 (provide 'cooked-tests-input)
 ;;; cooked-tests-input.el ends here
