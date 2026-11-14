@@ -504,7 +504,7 @@ and correcting for it once per drain is the oscillation itself."
       (set-window-point w target)
       (let ((top (save-excursion
                    (goto-char foot)
-                   (vertical-motion (- (1- (window-body-height w))) w)
+                   (vertical-motion (- (1- (cooked--window-rows w))) w)
                    (point))))
         (when (or (> top (window-start w))
                   (and (< top (window-start w))

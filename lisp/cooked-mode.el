@@ -2530,8 +2530,8 @@ on goes first instead and point\='s row lands as far below it as it already was.
               ((null arg))
               (rows (cooked--prompt-rows-above-point))
               (line (+ rows (min (max 0 scroll-margin)
-                                 (truncate (/ (window-body-height) 4.0)))))
-              ((< line (1- (window-body-height)))))
+                                 (truncate (/ (cooked--window-rows (selected-window)) 4.0)))))
+              ((< line (1- (cooked--window-rows (selected-window))))))
     (recenter line t)))
 
 ;; No evil state bindings here on purpose.
