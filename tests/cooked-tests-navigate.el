@@ -61,16 +61,29 @@ With `cooked-navigable-programs' at its default: nothing names this program."
 
 (ert-deftest cooked-navigate-keys-go-to-the-program-at-its-input ()
   "At the input every key but `cooked-navigation-keys' is the program's, as in a
-terminal: `C-s' and `C-r' included."
+terminal: control keys included."
   (cooked-tests--with-navigable
     (should-not cooked-navigate--reading)
     (cooked-tests--keys "a")
     (should (string-match-p "b'a'" (cooked-tests--text)))
-    (cooked-tests--keys "C-s")
-    (should (string-match-p (regexp-quote "b'\\x13'") (cooked-tests--text)))
-    (cooked-tests--keys "C-r")
-    (should (string-match-p (regexp-quote "b'\\x12'") (cooked-tests--text)))
+    (cooked-tests--keys "C-t")
+    (should (string-match-p (regexp-quote "b'\\x14'") (cooked-tests--text)))
     (should-not cooked-navigate--reading)))
+
+(ert-deftest cooked-navigate-isearch-from-the-input-searches-the-output ()
+  "`C-s' and `C-r' at the input are isearch, as everywhere in Emacs: the search
+lands in the output, which is then being read, and nothing reaches the program."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "C-r line SPC 42 RET")
+    (should cooked-navigate--reading)
+    (should (string-match-p "line 42" (buffer-substring (line-beginning-position)
+                                                       (line-end-position))))
+    (should-not (string-match-p (regexp-quote "b'\\x12'") (cooked-tests--text)))
+    (should-not (string-match-p "b'l'" (cooked-tests--text)))
+    (cooked-tests--keys "M-<")
+    (cooked-tests--keys "C-s line SPC 7 RET")
+    (should (string-match-p "line 7" (buffer-substring (line-beginning-position)
+                                                      (line-end-position))))))
 
 (ert-deftest cooked-navigate-emacs-motion-leaves-the-input-to-read ()
   "\\`M-<' is Emacs' even at the input, and leaves it: the buffer is then an

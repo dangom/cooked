@@ -1481,9 +1481,11 @@ make the input behave like cooked's own shell prompt, so one set of habits cover
 `C-p`/`C-n` are line motion (and `C-p` is therefore a way out into the output), `M-p`/`M-n`
 are history, sent as Up/Down -- the keys a terminal would have sent for it, so the history
 is the program's own -- and `M-v`/`M-<` get out. `M-p`/`M-n` do the same from the output,
-returning to the input first. That takes a few keys from the program (an agent's own
-`M-p`, readline's `M-<`), all reachable with `C-c C-q`. `C-v`, `C-s` and `C-r` stay the
-program's: agent CLIs bind them (image paste, stash, history search).
+returning to the input first. `C-y` pastes Emacs' kill ring, and `C-s`/`C-r` (and their
+regexp forms) are isearch, which from the input necessarily searches the output. That
+takes a few keys from the program (an agent's own `M-p`, stash on `C-s` and history search
+on `C-r`, readline's `M-<`), all reachable with `C-c C-q`. `C-v` stays the program's: agent
+CLIs paste an image from the clipboard with it, and a terminal has no other way to ask.
 
 ## `cooked-navigate--reading`: a flag set by commands, not a position
 

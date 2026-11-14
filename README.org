@@ -357,8 +357,9 @@ Where point is decides who a key is for:
 
 - *On the program's input* — the row its cursor is on — it behaves like a shell prompt:
   =C-p= / =C-n= move by line (so =C-p= steps up into the output), =M-p= / =M-n= are the
-  program's input history (sent as Up and Down), and =M-v= / =M-<= take you out too. Every
-  other key is the program's, as in any terminal (see ~cooked-navigation-keys~). A click or
+  program's input history (sent as Up and Down), =C-y= pastes the kill ring, =C-s= / =C-r=
+  are isearch over the output, and =M-v= / =M-<= take you out too. Every other key is the
+  program's, as in any terminal (see ~cooked-navigation-keys~). A click or
   the mouse wheel also takes you out.
 - *Anywhere else*, it is an ordinary read-only Emacs buffer: motion, isearch, the region,
   =M-w=, all of it, while the output keeps arriving underneath without moving the view.

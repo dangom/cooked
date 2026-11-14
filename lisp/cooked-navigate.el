@@ -77,7 +77,11 @@ its script.  nil turns navigation off."
     ("C-n" . next-line)
     ("M-p" . cooked-previous-input)
     ("M-n" . cooked-next-input)
-    ("C-y" . cooked-paste))
+    ("C-y" . cooked-paste)
+    ("C-s" . isearch-forward)
+    ("C-r" . isearch-backward)
+    ("C-M-s" . isearch-forward-regexp)
+    ("C-M-r" . isearch-backward-regexp))
   "Keys that keep their Emacs meaning while point is in a program's input.
 
 An alist of (KEY . COMMAND), KEY as `kbd' spells it.  Everywhere but the
@@ -88,12 +92,13 @@ comint: \\`C-p' and \\`C-n' move by line, so \\`C-p' steps up into the
 output; \\`M-p' and \\`M-n' are the input history, sent to the program as
 the Up and Down keys it would have received for them in a terminal.  \\`C-y'
 pastes Emacs' kill ring -- and so the clipboard -- as `yank' does everywhere
-else.  \\`M-v' and \\`M-<' are the other ways out.
+else.  \\`C-s' and \\`C-r' are isearch over the output, which a search from the
+input necessarily is.  \\`M-v' and \\`M-<' are the other ways out.
 
 Every entry takes a key away from the program: a readline-based program loses
-\\`M-<' (beginning of history), and a program with its own \\`M-p' (an agent's
-model picker, say) loses that, as does one with its own kill buffer on
-\\`C-y'.  \\[cooked-send-literal-key] followed by the key still sends it."
+\\`M-<' (beginning of history) and \\`C-r' (history search), and a program with
+its own \\`M-p' (an agent's model picker, say) or \\`C-s' loses that, as does
+one with its own kill buffer on \\`C-y'.  \\[cooked-send-literal-key] followed by the key still sends it."
   :type '(alist :key-type (string :tag "Key") :value-type (function :tag "Command"))
   :set (lambda (symbol value)
          (set-default symbol value)
