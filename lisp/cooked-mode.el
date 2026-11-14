@@ -1291,7 +1291,27 @@ which it usually is not.  Walk the frame's windows instead."
   (dolist (window (window-list frame 'no-minibuf))
     (with-current-buffer (window-buffer window)
       (when cooked--session
-        (cooked--sync-size)))))
+        (cooked--sync-size)
+        (cooked--repin-resized window)))))
+
+(defun cooked--repin-resized (window)
+  "Put WINDOW's last row back on its last line, if WINDOW follows the output.
+
+A drain pins the bottom, but a resize is not a drain: a window popping up beside
+this one -- `*Warnings*', a backtrace -- shrinks it, and while the program is
+idle nothing redraws.  Emacs kept the start, so the rows under the cursor,
+the status line among them, went out of view; and when the popup went away the
+window grew below a bottom row that no longer reached it.  Re-pinned here, from
+the same hook that tells the child, whether or not the child answers."
+  (when (and (not cooked--alt)
+             (not cooked--pin-screen-top)
+             (cooked--follow-p)
+             (not (cooked--dock-window-p window))
+             (not (window-live-p (window-parameter window 'cooked-dock)))
+             (>= (window-point window)
+                 (or (cooked--screen-start-position) (point-max))))
+    (cooked--pin-transcript-bottom (list window) (window-point window)
+                                   (point-max))))
 
 ;; Added when the first session starts rather than at load time, so requiring the
 ;; package changes nothing about Emacs until you actually use it.  `add-hook' dedupes,

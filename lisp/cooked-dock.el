@@ -211,6 +211,43 @@ transcript's bottom edge back and forth under the reader."
           (window-resize dock delta nil nil t)
           (set-window-parameter dock 'cooked-dock-rows (max rows have)))))))
 
+(defun cooked-dock--refit (dock)
+  "Give DOCK back exactly the height of the rows it holds, after a layout change.
+
+Emacs shares a resize out between the windows it touches in proportion to their
+size, and the dock is one of them: a window popping up beside the pair and going
+away again -- `*Warnings*', a backtrace, a completion list -- left the dock with
+a share of the space it handed back.  It then showed a row of transcript above
+the input and a gap of a few pixels under the status line, and nothing put it
+right until the program grew its input.  The dock's size is the rows it holds,
+not a share of anything.
+
+Fitted to the rows the input has now, fewer included: a dock otherwise never
+shrinks, so that a redraw cannot move the edge of what is being read -- but a
+layout change has just moved everything anyway, and a dock left at the height a
+narrow moment wrapped its input to went on showing transcript above it."
+  (when-let* ((main (cooked-dock--main dock)))
+    (let* ((rows (min (cooked-dock--rows) (cooked-dock--max-rows main)))
+           (delta (- (cooked-dock--body-pixels dock rows)
+                     (window-body-height dock t))))
+      (when (and (> rows 0) (/= delta 0))
+        (let ((window-resize-pixelwise t)
+              (window-min-height 1)
+              (ignore-window-parameters t))
+          (when (window-resizable-p dock delta nil nil t)
+            (window-resize dock delta nil nil t)
+            (set-window-parameter dock 'cooked-dock-rows rows)))))))
+
+(defun cooked-dock--size-changed (frame)
+  "Refit and re-pin every dock in FRAME.  On `window-size-change-functions'."
+  (cooked--protect-hook
+    (dolist (window (window-list frame 'no-minibuffer))
+      (when (and (cooked--dock-window-p window) (cooked-dock--main window))
+        (with-current-buffer (window-buffer window)
+          (when cooked--session
+            (cooked-dock--refit window)
+            (cooked-dock--pin window)))))))
+
 (defun cooked-dock--max-rows (window)
   "The most rows a dock under WINDOW may take."
   (floor (* cooked-dock-max-fraction (cooked--window-rows window))))
@@ -423,6 +460,7 @@ The wheel scrolls the window under the mouse, whatever buffer is current."
 (add-hook 'post-command-hook #'cooked-dock--post-command-elsewhere)
 (add-hook 'pre-command-hook #'cooked-dock--pre-command)
 (add-hook 'window-buffer-change-functions #'cooked-dock--schedule-clean-up)
+(add-hook 'window-size-change-functions #'cooked-dock--size-changed)
 ;; Only the flag outlives a saved window configuration -- a window is not a
 ;; thing that can be written to a file -- so a dock restored by `desktop' or
 ;; `persp-mode' comes back marked but orphaned, and is cleaned up.
