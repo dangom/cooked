@@ -402,5 +402,23 @@ while the program keeps working."
       (should (equal (buffer-substring-no-properties (region-beginning) (region-end))
                      "line 58\nline 59")))))
 
+(ert-deftest cooked-a-scroll-past-the-bottom-is-clamped-while-following ()
+  "Regression: a wheel notch past the end scrolled a following window down a
+line and the next drain pinned it back up, so the window jittered for as long
+as the wheel turned.  The overshoot is now undone in the same command."
+  (cooked-tests--with-navigable
+    (let* ((w (selected-window))
+           (bottom (cooked--bottom-start w)))
+      (should-not cooked-navigate--reading)
+      (set-window-start w (save-excursion (goto-char bottom) (forward-line 2) (point)) t)
+      (cooked--clamp-overscroll)
+      (should (= (window-start w) bottom))
+      ;; While reading, the window is the user's: nothing is clamped.
+      (cooked-tests--keys "M-<")
+      (should cooked-navigate--reading)
+      (set-window-start w (point-min) t)
+      (cooked--clamp-overscroll)
+      (should (= (window-start w) (point-min))))))
+
 (provide 'cooked-tests-navigate)
 ;;; cooked-tests-navigate.el ends here

@@ -2097,6 +2097,9 @@ to the child verbatim."
   ;; no output, so a drain is never what discovers that one of them scrolled the
   ;; alt screen out of the window.
   (add-hook 'post-command-hook #'cooked--pin-alt-windows nil t)
+  ;; After navigation, which decides whether this command left the bottom to
+  ;; read: a scroll past the end is clamped only while still following.
+  (add-hook 'post-command-hook #'cooked--clamp-overscroll 70 t)
   ;; After `cooked--track-wandering', which it reads: whether point is in the
   ;; child's input decides whose the keys are.  See cooked-navigate.el.
   (add-hook 'pre-command-hook #'cooked-navigate--pre-command nil t)

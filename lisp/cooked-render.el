@@ -543,6 +543,51 @@ forcing would drag point along with it."
     (cooked--dolist-windows w windows
       (set-window-start w top t))))
 
+(defun cooked--bottom-start (window &optional foot)
+  "The start that puts FOOT, default the buffer's last row, on WINDOW's last row.
+
+Every row ends in a newline, the last included, so `point-max' is the start of
+an empty line below the last row rather than a place on it.  Measured from
+there the window kept that empty line at its foot and paid for it with a row of
+real text off the top."
+  (let* ((foot (or foot (point-max)))
+         (foot (if (and (= foot (point-max)) (> foot (point-min))
+                        (eq (char-before foot) ?\n))
+                   (1- foot)
+                 foot)))
+    (save-excursion
+      (goto-char foot)
+      (vertical-motion (- (1- (cooked--window-rows window))) window)
+      (point))))
+
+(defun cooked--clamp-overscroll ()
+  "Undo a scroll past the bottom of a window that is following the output.
+
+A terminal's last row is as far down as there is to go, but Emacs lets a window
+scroll on until only its last line is left at the top.  While the view follows
+the child, the next drain pins the bottom back -- so each wheel notch past the
+end scrolled down a line and the next frame scrolled it back up, and the window
+jittered for as long as the wheel turned.  Clamped here, from
+`post-command-hook', the overshoot is undone before redisplay ever shows it.
+The pixel vscroll goes too: a precision scroll leaves a remainder that
+survives being told where the window starts.
+
+Only while following, and only downward: a window being read is the user's to
+scroll, and scrolling it down to the input is how reading ends."
+  (when (and cooked--session (not cooked--alt) (cooked--follow-p))
+    (let ((window (selected-window)))
+      (when (eq (window-buffer window) (current-buffer))
+        (let ((top (if cooked--pin-screen-top
+                       ;; A cleared display is shown from its top, below the
+                       ;; transcript it archived -- further down than the bottom
+                       ;; pin, and on purpose; see `cooked--scroll-transcript'.
+                       (max (cooked--bottom-start window)
+                            (cooked--screen-start-position))
+                     (cooked--bottom-start window))))
+          (when (> (window-start window) top)
+            (set-window-vscroll window 0 t)
+            (set-window-start window top t)))))))
+
 (defun cooked--pin-transcript-bottom (windows &optional pos bottom)
   "Follow POS, defaulting to `point-max\=', with the bottom row of each of WINDOWS.
 
@@ -584,21 +629,10 @@ really has fewer used rows than before rather than every time
 pixels.  That disagreement is permanent on a window whose rows differ in height,
 and correcting for it once per drain is the oscillation itself."
   (let* ((target (or pos (point-max)))
-         (foot (or bottom target))
-         ;; Every row ends in a newline, the last included, so `point-max' is the
-         ;; start of an empty line below the last row rather than a place on it.
-         ;; Measured from there the window kept that empty line at its foot and
-         ;; paid for it with a row of real text off the top.
-         (foot (if (and (= foot (point-max)) (> foot (point-min))
-                        (eq (char-before foot) ?\n))
-                   (1- foot)
-                 foot)))
+         (foot (or bottom target)))
     (cooked--dolist-windows w windows
       (set-window-point w target)
-      (let ((top (save-excursion
-                   (goto-char foot)
-                   (vertical-motion (- (1- (cooked--window-rows w))) w)
-                   (point))))
+      (let ((top (cooked--bottom-start w foot)))
         (when (or (> top (window-start w))
                   (and (< top (window-start w))
                        (let ((end (window-end w)))
