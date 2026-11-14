@@ -115,9 +115,28 @@ A window too short to leave the rest for reading is not docked at all."
   (let ((main (window-parameter dock 'cooked-dock-main)))
     (and (window-live-p main) main)))
 
+(defun cooked-dock--body-pixels (window rows)
+  "The body height, in pixels, that shows ROWS live rows in WINDOW.
+
+Measured, not multiplied.  A row is the default line height only nominally:
+the box-drawing rules an agent draws round its input, a fallback glyph, the
+cursor's row, `line-spacing' rounding -- any of them makes a row a pixel or
+two taller, and a dock sized by multiplication came up short and clipped its
+last row, which is the status line under the input.  When ROWS covers the
+whole live region the region is laid out and measured; a dock capped below
+that has no last row to protect, and keeps the nominal size."
+  (let ((nominal (* rows (window-default-line-height window))))
+    (if (< rows (cooked-dock--rows))
+        nominal
+      (max nominal
+           (cdr (window-text-pixel-size
+                 window (cooked-dock--live-top)
+                 (save-excursion (goto-char (cooked-dock--foot))
+                                 (line-end-position))))))))
+
 (defun cooked-dock--pixels (window rows)
   "The total pixel height of a window on WINDOW's buffer showing ROWS rows."
-  (+ (* rows (window-default-line-height window))
+  (+ (cooked-dock--body-pixels window rows)
      (window-mode-line-height window)
      (or (window-bottom-divider-width window) 0)))
 
@@ -182,18 +201,19 @@ A window too short to leave the rest for reading is not docked at all."
   (floor (window-body-height window t) (window-default-line-height window)))
 
 (defun cooked-dock--resize (dock rows)
-  "Grow DOCK to ROWS rows if it is smaller; a dock never shrinks while it lives.
+  "Grow DOCK to show ROWS rows whole; a dock never shrinks while it lives.
 Shrinking on every redraw that happens to need fewer rows would move the
 transcript's bottom edge back and forth under the reader."
-  (let ((have (or (window-parameter dock 'cooked-dock-rows) 0)))
-    (when (> rows have)
+  (let* ((have (or (window-parameter dock 'cooked-dock-rows) 0))
+         (delta (- (cooked-dock--body-pixels dock (max rows have))
+                   (window-body-height dock t))))
+    (when (> delta 0)
       (let ((window-resize-pixelwise t)
             (window-min-height 1)
-            (ignore-window-parameters t)
-            (delta (* (- rows have) (window-default-line-height dock))))
+            (ignore-window-parameters t))
         (when (window-resizable-p dock delta nil nil t)
           (window-resize dock delta nil nil t)
-          (set-window-parameter dock 'cooked-dock-rows rows))))))
+          (set-window-parameter dock 'cooked-dock-rows (max rows have)))))))
 
 (defun cooked-dock--max-rows (window)
   "The most rows a dock under WINDOW may take."
