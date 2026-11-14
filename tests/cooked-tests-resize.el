@@ -146,11 +146,29 @@ straight away, and nothing is owed afterwards."
       (should-not cooked--resize-deferred)
       (should (> cooked--rows rows)))))
 
-(ert-deftest cooked-resize-width-is-never-held ()
-  "A change of width reaches the program at once: text laid out for another
-width is wrong, not merely cropped."
+(ert-deftest cooked-resize-width-waits-to-settle ()
+  "A change of width reaches an inline program once it has held for
+`cooked-resize-settle-delay', and not before: told of every passing width, the
+program's erase of its last frame counts rows at the wrong one, and Claude
+Code's classic renderer prints the conversation again each time."
   (cooked-tests--with-repainter
-    (let ((cols cooked--cols))
+    (let ((cols cooked--cols)
+          (cooked-resize-settle-delay 0.2))
+      (set-window-buffer (split-window nil (- (window-total-width) 10) 'right)
+                         (get-buffer-create " *cooked-tests-other*"))
+      (cooked--sync-size)
+      (should cooked--resize-deferred)
+      (should (= cooked--cols cols))
+      (should (cooked-tests--settle (lambda () (< cooked--cols cols)) 3))
+      (should-not cooked--resize-deferred)
+      (should (cooked-tests--repainted (1+ cooked-tests--repaints-before))))))
+
+(ert-deftest cooked-resize-width-at-once-without-a-delay ()
+  "With `cooked-resize-settle-delay' nil a change of width reaches the program
+at once."
+  (cooked-tests--with-repainter
+    (let ((cols cooked--cols)
+          (cooked-resize-settle-delay nil))
       (set-window-buffer (split-window nil (- (window-total-width) 10) 'right)
                          (get-buffer-create " *cooked-tests-other*"))
       (cooked--sync-size)

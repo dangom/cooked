@@ -1278,8 +1278,8 @@ redraws everything again.  That is the whole screen flashing on every \\`M-x'.
 With this on, a change in height alone while a minibuffer is active is not
 passed on.  The window simply shows as much of the screen as fits, from the top,
 and the child is told only if the height is still different once the minibuffer
-has gone.  A change in width is always passed on at once: text laid out for
-another width is wrong, not merely cropped."
+has gone.  A change in width is not this setting's business; see
+`cooked-resize-settle-delay'."
   :type 'boolean
   :group 'cooked)
 
@@ -1309,8 +1309,8 @@ is passed on at once, since more room is never a reason to overflow.
 
 The held-back height is passed on the moment the program stops drawing inline
 -- it takes the alternate screen, which does need the exact size, or exits back
-to a prompt.  A change in width is always passed on at once: text laid out for
-another width is wrong, not merely cropped."
+to a prompt.  A change in width waits only until it settles; see
+`cooked-resize-settle-delay'."
   :type 'boolean
   :group 'cooked)
 
@@ -1319,21 +1319,84 @@ another width is wrong, not merely cropped."
 Set by `cooked--sync-size'; `cooked--refresh-keymap' retries when it is set,
 since a change of state is what ends every reason to hold a size back.")
 
+(defcustom cooked-resize-settle-delay 0.5
+  "Seconds a new width must hold before an inline program is told about it.
+
+An inline program -- an agent's chat, a REPL -- erases its previous frame by
+moving the cursor up over as many rows as that frame took, counted at the width
+it was drawn at.  Change the width under it and the old frame rewraps to a
+different number of rows: the count is wrong, the erase stops short or reaches
+too far, and the next frame is drawn over the text above it or leaves a copy of
+itself behind.  Claude Code's classic renderer goes further and may print the
+whole conversation again on every width it is told about.
+
+An Emacs window changes width all the time and mostly for a moment: a window
+popping up beside it, a split made and undone, a frame being dragged.  With a
+delay, the program is told only once the width has stayed put this long, so a
+moment never reaches it and a drag reaches it once.  Meanwhile its rows keep
+their width and Emacs wraps whatever is wider than the window.  Full-screen
+programs and shells at a prompt are told at once, as before.  Nil tells every
+program at once."
+  :type '(choice (const :tag "Tell at once" nil) number)
+  :group 'cooked)
+
+(defvar-local cooked--resize-settle-timer nil
+  "The timer that passes a held-back width on once it has settled.")
+
+(defvar-local cooked--resize-settle-cols nil
+  "The width the settle timer is waiting to pass on.")
+
+(defvar-local cooked--resize-settled nil
+  "Non-nil while the settle timer re-syncs: the width has held, pass it on.")
+
+(defun cooked--inline-program-p ()
+  "Whether a program is drawing inline: owns the keyboard, not full screen."
+  (and (not cooked--alt) (memq (cooked--policy) '(raw command))))
+
+(defun cooked--hold-width-p (cols)
+  "Whether a change to COLS columns should wait to settle; arm the wait if so."
+  (when (and cooked-resize-settle-delay
+             (not cooked--resize-settled)
+             (not (eql cols cooked--cols))
+             (cooked--inline-program-p))
+    ;; Restarted only when the width wanted moves again: asking about the same
+    ;; width -- every keymap refresh asks -- must not keep pushing it back.
+    (unless (and (timerp cooked--resize-settle-timer)
+                 (eql cols cooked--resize-settle-cols))
+      (when (timerp cooked--resize-settle-timer)
+        (cancel-timer cooked--resize-settle-timer))
+      (setq cooked--resize-settle-cols cols)
+      (cooked--arm-settle-timer))
+    t))
+
+(defun cooked--arm-settle-timer ()
+  "Re-sync this buffer's size once `cooked-resize-settle-delay' has passed."
+  (let ((buffer (current-buffer)))
+    (setq cooked--resize-settle-timer
+          (run-with-timer
+           cooked-resize-settle-delay nil
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq cooked--resize-settle-timer nil)
+                 (let ((cooked--resize-settled t))
+                   (cooked--sync-size)))))))))
+
 (defun cooked--resize-deferred-p (rows cols moved)
   "Whether a move to ROWS by COLS should be held back for now.
 
 MOVED is whether the cell size changed, which is never deferred: that is a zoom
-or a font change, not a window giving up lines.  Neither is a change of width.
-See `cooked-defer-resize-in-minibuffer' and
-`cooked-defer-resize-on-main-screen'."
+or a font change, not a window giving up lines.  A change of width is held only
+until it settles; see `cooked-resize-settle-delay',
+`cooked-defer-resize-in-minibuffer' and `cooked-defer-resize-on-main-screen'."
   (and (not moved)
-       (eql cols cooked--cols)
-       (or (and cooked-defer-resize-in-minibuffer
-                (> (minibuffer-depth) 0))
-           (and cooked-defer-resize-on-main-screen
-                (< rows cooked--rows)
-                (not cooked--alt)
-                (memq (cooked--policy) '(raw command))))))
+       (if (eql cols cooked--cols)
+           (or (and cooked-defer-resize-in-minibuffer
+                    (> (minibuffer-depth) 0))
+               (and cooked-defer-resize-on-main-screen
+                    (< rows cooked--rows)
+                    (cooked--inline-program-p)))
+         (cooked--hold-width-p cols))))
 
 (defun cooked--minibuffer-exited ()
   "Bring every session's size up to date once the minibuffer has closed.
