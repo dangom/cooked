@@ -85,11 +85,19 @@ the window happens to be scrolled."
 (ert-deftest cooked-sticky-scroll-is-off-until-asked-for ()
   "Off by default, and read once in `cooked-mode\=' rather than consulted per
 redisplay: a header line costs a row of the window body, which
-`cooked--window-rows\=' folds straight into a PTY resize."
-  (with-temp-buffer
-    (let ((cooked-sticky-scroll nil))
-      (cooked-mode)
-      (should-not header-line-format))))
+`cooked--window-rows\=' folds straight into a PTY resize.  Off means the header
+line is left alone, not blanked: a setup that heads every window with its own
+header line keeps it in a cooked buffer too."
+  (let ((default (default-value 'header-line-format)))
+    (unwind-protect
+        (progn
+          (setq-default header-line-format '("user's own header"))
+          (with-temp-buffer
+            (let ((cooked-sticky-scroll nil))
+              (cooked-mode)
+              (should-not (local-variable-p 'header-line-format))
+              (should (equal header-line-format '("user's own header"))))))
+      (setq-default header-line-format default))))
 
 (ert-deftest cooked-sticky-scroll-installs-the-header-when-enabled ()
   (with-temp-buffer

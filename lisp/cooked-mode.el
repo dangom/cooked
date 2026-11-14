@@ -1971,12 +1971,6 @@ to the child verbatim."
               bidi-paragraph-direction 'left-to-right
               truncate-lines (not cooked-rejoin-wrapped-lines)
               mode-line-process '(:eval (cooked--mode-line))
-              ;; Read once here and never toggled afterwards -- see
-              ;; `cooked-sticky-scroll' for why toggling it would be its own PTY
-              ;; resize.  Left alone entirely when the feature is off, so a
-              ;; cooked buffer has no header line unless it was asked for.
-              header-line-format (and cooked-sticky-scroll
-                                      '(:eval (cooked--sticky-header)))
               ;; The transcript's own structure, offered to the three
               ;; subsystems that ask for it in three different words.  All
               ;; three are inert until something reads them, which is what
@@ -1990,6 +1984,13 @@ to the child verbatim."
               outline-search-function #'cooked--outline-search
               outline-level #'cooked--outline-level
               bookmark-make-record-function #'cooked--bookmark-record)
+  ;; Read once here and never toggled afterwards -- see `cooked-sticky-scroll'
+  ;; for why toggling it would be its own PTY resize.  Left alone entirely when
+  ;; the feature is off: not set to nil, which would blank whatever header line
+  ;; the user's own setup puts on every window (a header line in place of the
+  ;; mode line is a common one) and take the buffer's name and mode off it.
+  (when cooked-sticky-scroll
+    (setq-local header-line-format '(:eval (cooked--sticky-header))))
   ;; comint would send the line to the process behind the buffer, which here is the
   ;; wakeup pipe.  Every submission goes to the child instead, so `comint-send-input'
   ;; is a working command rather than something to be remapped around -- and nothing
