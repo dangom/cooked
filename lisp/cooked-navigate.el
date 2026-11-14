@@ -52,6 +52,7 @@
 (declare-function cooked--policy "cooked" ())
 (declare-function cooked-previous-input "cooked-mode" (&optional n))
 (declare-function cooked-next-input "cooked-mode" (&optional n))
+(declare-function cooked-dock-select-input "cooked-dock" ())
 
 (defcustom cooked-navigable-programs t
   "Which programs' output is read with ordinary Emacs commands while they run.
@@ -233,7 +234,18 @@ Called at the end of `cooked--refresh-keymap'."
     (setq cooked-navigate--point (point)
           cooked-navigate--start
           (and (eq (window-buffer (selected-window)) (current-buffer))
-               (window-start (selected-window))))))
+               (cooked-navigate--scroll (selected-window))))))
+
+(defun cooked-navigate--scroll (window)
+  "WINDOW's scroll position: its start, and how far it is scrolled past it.
+Both, because a pixel scroll -- `pixel-scroll-precision-mode', ultra-scroll --
+moves the vertical scroll many times before it moves the start at all."
+  (cons (window-start window) (window-vscroll window t)))
+
+(defun cooked-navigate--later-p (a b)
+  "Whether scroll position A shows later text than B."
+  (or (> (car a) (car b))
+      (and (= (car a) (car b)) (> (cdr a) (cdr b)))))
 
 (defun cooked-navigate--post-command ()
   "Decide whether the command just run left the input or came back to it."
@@ -243,13 +255,13 @@ Called at the end of `cooked--refresh-keymap'."
       (let* ((window (selected-window))
              (before cooked-navigate--start)
              (after (and (eq (window-buffer window) (current-buffer))
-                         (window-start window)))
+                         (cooked-navigate--scroll window)))
              (moved (not (eql (point) cooked-navigate--point)))
              (cursor (cooked--cursor-position)))
         (if cooked-navigate--reading
             (cond
              ;; Scrolled toward the end until the input is in view again.
-             ((and before after (> after before)
+             ((and before after (cooked-navigate--later-p after before)
                    (pos-visible-in-window-p cursor window)
                    (pos-visible-in-window-p (point-max) window))
               (setq cooked-navigate--reading nil)
@@ -264,7 +276,7 @@ Called at the end of `cooked--refresh-keymap'."
                  ;; input -- or live output would scroll the window straight back.
                  ;; Not a recentre, which is about where point sits in the
                  ;; window rather than about looking elsewhere.
-                 (and before after (< after before)
+                 (and before after (cooked-navigate--later-p before after)
                       (not (memq this-command '(recenter recenter-top-bottom))))
                  (and moved (not (cooked-navigate--at-input-p))))
             (setq cooked-navigate--reading t)))
@@ -279,7 +291,9 @@ Called at the end of `cooked--refresh-keymap'."
   (interactive)
   (setq cooked-navigate--reading nil)
   (when cooked--session
-    (goto-char (cooked--cursor-position))
+    (unless (and (fboundp 'cooked-dock-select-input)
+                 (cooked-dock-select-input))
+      (goto-char (cooked--cursor-position)))
     (setq cooked--wandered nil)
     (cooked--refresh-keymap t)))
 

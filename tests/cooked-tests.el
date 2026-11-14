@@ -69,6 +69,7 @@
 (require 'cooked-tests-host)
 (require 'cooked-tests-navigate)
 (require 'cooked-tests-annotate)
+(require 'cooked-tests-dock)
 (require 'cooked-tests-bench)
 
 (provide 'cooked-tests)

@@ -53,6 +53,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'jit-lock)
 (require 'comint)
 (require 'face-remap)
@@ -2604,7 +2605,7 @@ The column count comes from `cooked--layout-window' rather than from a second
 minimum taken here.  They were computed separately and are the same quantity by
 construction -- that window is *defined* as the narrowest one -- so a change to
 what counts as narrowest had two places to land and only ever reached one."
-  (let ((windows (get-buffer-window-list (current-buffer) nil t)))
+  (let ((windows (cooked--content-windows)))
     (if-let* ((layout (cooked--layout-window)))
         (cons (max 1 (apply #'min (mapcar #'cooked--window-rows windows)))
               (max 1 (window-max-chars-per-line layout)))
@@ -2618,8 +2619,27 @@ so it disagrees with the buffer whenever the default face is remapped —
 `text-scale-mode' being the usual way — and it says nothing about
 `line-spacing'.  Dividing the real pixel height by the real line height
 gets both, and floors, so a row that is only half visible is not a row we
-claim to have."
-  (floor (window-body-height window t) (window-default-line-height window)))
+claim to have.
+
+A window with a dock under it (see cooked-dock.el) counts the dock's rows as
+its own: the two are one terminal split in two, and the child is sized for
+the whole of it, so docking never sends it a resize."
+  (floor (+ (window-body-height window t)
+            (if-let* ((dock (window-parameter window 'cooked-dock))
+                      ((window-live-p dock)))
+                (window-body-height dock t)
+              0))
+         (window-default-line-height window)))
+
+(defun cooked--dock-window-p (window)
+  "Whether WINDOW is a dock: the bottom rows of another window, not a view."
+  (window-parameter window 'cooked-docked))
+
+(defun cooked--content-windows ()
+  "The windows showing this buffer, on any frame, docks excepted.
+A dock is part of the window above it, which is the one counted."
+  (seq-remove #'cooked--dock-window-p
+              (get-buffer-window-list (current-buffer) nil t)))
 
 (defun cooked--layout-window ()
   "The window this buffer's rows are laid out for, or nil if it has none.
@@ -2647,7 +2667,7 @@ to do its measuring in.
 Nothing is measured at all until there is a second window to compare against,
 which is the ordinary case and stays free."
   (let (narrowest width)
-    (dolist (window (get-buffer-window-list (current-buffer) nil t) narrowest)
+    (dolist (window (cooked--content-windows) narrowest)
       (cond ((null narrowest) (setq narrowest window))
             (t (unless width (setq width (window-max-chars-per-line narrowest)))
                (let ((chars (window-max-chars-per-line window)))

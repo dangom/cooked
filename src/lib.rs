@@ -147,6 +147,8 @@ pub unsafe extern "C" fn emacs_module_init(runtime: *mut Runtime) -> std::ffi::c
         /// (TEXT STYLE-SPANS DECO-SPANS), where the spans carry character offsets into TEXT and
         /// appear only where there is something to say.  :scrolled is one block for the whole
         /// batch; :rows is an alist of (INDEX . BLOCK), one per damaged screen row.
+        /// :scrolled-spans says where in the batch each scrolled row landed, as
+        /// (START . CHARS), oldest first, so Lisp can carry a held position across a scroll.
         /// With REJOIN non-nil (the default), a line the terminal wrapped is emitted as one
         /// line rather than one per screen row.
         ///
@@ -748,7 +750,8 @@ fn foreground_pid(env: Env, args: &[Value]) -> Result<Value> {
     }
 }
 
-/// `(:scrolled ROWS :rows ((INDEX . RUNS)...) :height N :used N :head N
+/// `(:scrolled ROWS :scrolled-spans ((START . CHARS)...) :rows ((INDEX . RUNS)...)
+/// :height N :used N :head N
 /// :cursor (ROW COL VISIBLE) :marks ((ID . ANCHOR)...) ...)`
 fn update_to_lisp(env: Env, update: &Update, rejoin: bool) -> Result<Value> {
     // The scrollback is assembled first because the events are resolved against it: a
@@ -797,8 +800,20 @@ fn update_to_lisp(env: Env, update: &Update, rejoin: bool) -> Result<Value> {
         })
         .collect::<Result<Vec<_>>>()?;
 
+    // `(START . CHARS)` per scrolled row, oldest first: where each row that left the
+    // screen this drain landed in the scrollback text. What lets Lisp keep a reader's
+    // place -- a point or a window start held on the screen -- on the same text across
+    // a scroll, which a cell cannot do (the cell now holds newer text) and a buffer
+    // position cannot either (the row under it is rewritten). Per row, so it stays
+    // exact under `rejoin`.
+    let scrolled_spans = spans
+        .iter()
+        .map(|span| env.cons(env.into_lisp(span.start)?, env.into_lisp(span.chars)?))
+        .collect::<Result<Vec<_>>>()?;
+
     plist!(env, {
         ":scrolled"   => scrolled,
+        ":scrolled-spans" => scrolled_spans,
         ":rows"       => rows,
         ":height"     => update.delta.height,
         ":used"       => update.delta.used,

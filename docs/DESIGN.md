@@ -1487,6 +1487,59 @@ takes a few keys from the program (an agent's own `M-p`, stash on `C-s` and hist
 on `C-r`, readline's `M-<`), all reachable with `C-c C-q`. `C-v` stays the program's: agent
 CLIs paste an image from the clipboard with it, and a terminal has no other way to ask.
 
+## cooked-dock.el: the input in a window of its own, made only when it is needed
+
+The goal is an agent's fullscreen renderer -- history scrolling above an input that never
+moves -- with the history as Emacs text. Three shapes were weighed:
+
+- **One window, a fake footer.** Emacs has no footer area: the mode line is one row and
+  the header line is at the top. An overlay's `after-string` at `window-end` has to be
+  moved on every scroll, changes `window-end` by being there, and is not editable text.
+- **Two windows, always.** Simplest to reason about, but it changes the user's layout
+  permanently -- coterie's "terminals only" check, `persp-mode`, `desktop` all see a
+  second window per agent -- and a following window gains nothing from it.
+- **Two windows, while reading.** What was built. A window that follows needs no dock; the
+  moment one stops showing the bottom row, its live rows are split off below it. Taken
+  exactly from the window's own bottom rows, showing exactly what they showed, so nothing
+  moves. Re-joined when the window is scrolled *into* those rows (into, not onto: a window
+  whose last row abuts the dock is what docking leaves behind), or on `RET` sent from the
+  dock. The pair is atomic (`window-make-atom`), so splitting and deleting treat it as one.
+
+The child is never resized for a dock: `cooked--window-rows` counts a docked window's dock
+as its own rows, and `cooked--content-windows` leaves docks out of the sizing minimum. The
+dock carries `cooked-docked` as a persistent window parameter, the only thing a saved
+window configuration can hold (a window object cannot be written to a file), so a dock
+restored by `desktop` or `persp-mode` comes back orphaned and is deleted.
+
+Hook order matters: a buffer-local `post-command-hook` of positive depth runs after every
+global one, so the dock's post-command is buffer-local at depth 60, after navigate's 50.
+As a global hook it ran first, and navigate then read the switch between the dock and the
+window above it as a scroll and undid it.
+
+## Holding a reader's place while the screen scrolls
+
+On a main screen that keeps scrolling -- an agent appending its transcript -- a window
+held back from the bottom shows rows the drain is about to rewrite. Two things were
+wrong, each measured by pixel-scrolling (ultra-scroll, 5 px per event) during streaming
+output in a GUI Emacs with `line-spacing` 0.2:
+
+- **Point was held by screen cell.** `cooked--track-wandering` pins a point parked on the
+  screen to its (row . column), right for a full-screen program and wrong here: after a
+  scroll the cell holds newer text, so point walked down the transcript one row per
+  scroll until the window had to follow it. The window's start, a buffer position on a
+  rewritten row, slid the same way.
+- **A pixel scroll did not count as leaving.** navigate compared `window-start` alone, and
+  a pixel scroll changes the vertical scroll many times before it changes the start, so
+  the next drain re-pinned the window and undid it. It compares (start . vscroll) now.
+
+The core now reports `:scrolled-spans`, where each row that left the screen landed in the
+scrollback text (`RowSpan`, already computed to resolve semantic marks). `cooked--map-cell`
+carries a cell across the drain: up by the number of rows that scrolled if it is still on
+the screen, into the batch at its span if it left. Point (`cooked--place-point`) and the
+start of every window not following (`cooked--held-windows`) are carried that way, vscroll
+kept. Before: 27 of 40 scroll events ended up moving the wrong way and 8 drains moved the
+window. After: none, over 240 events and six dock/undock transitions.
+
 ## `cooked-navigate--reading`: a flag set by commands, not a position
 
 Whether the user is reading the output or typing at the input could be read off point —

@@ -33,6 +33,7 @@
 (require 'cooked-keys)
 (require 'cooked-navigate)
 (require 'cooked-dnd)
+(require 'cooked-dock)
 (require 'cooked-completion)
 (require 'cooked-mouse)
 (require 'cooked-shell-integration)
@@ -246,7 +247,10 @@ whatever Emacs is showing, and the ghost has been marking that spot."
                    (setq cooked-navigate--reading nil))
                  cooked--wandered)
              (cooked--child-owns-keyboard-p))
-    (goto-char (cooked--cursor-position))
+    ;; With a dock the input is already in view: type there, and leave the
+    ;; window being read where it is.  See cooked-dock.el.
+    (unless (cooked-dock-select-input)
+      (goto-char (cooked--cursor-position)))
     (setq cooked--wandered nil)
     (cooked--update-ghost-cursor)))
 

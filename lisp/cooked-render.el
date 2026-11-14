@@ -285,7 +285,13 @@ here for the same reason `follow' would leave the buffer's point alone for
 the same case — it reads as the user choosing to look elsewhere, not as a
 window that fell behind."
   (when-let* ((start (cooked--screen-start-position)))
-    (seq-filter (lambda (w) (>= (window-point w) start))
+    ;; Never a dock, which `cooked--after-scroll-hook' places itself, nor the
+    ;; window above one: that window is docked because it was scrolled away
+    ;; from the bottom, and following would be undoing exactly that.
+    (seq-filter (lambda (w) (and (>= (window-point w) start)
+                                 (not (cooked--dock-window-p w))
+                                 (not (window-live-p
+                                       (window-parameter w 'cooked-dock)))))
                 (delq (selected-window) (get-buffer-window-list nil nil t)))))
 
 (defun cooked--install-resources (update)
@@ -342,7 +348,15 @@ it up by, only a claim about text that is about to stop being that text -- so
 the question is asked while it still has an answer.  See
 `cooked-clear-selection-on-output'.")
   (others nil :documentation "\
-The other windows on this buffer that were following the child's cursor."))
+The other windows on this buffer that were following the child's cursor.")
+  (held nil :documentation "\
+The windows that were not following, each with the screen cell its start was on.
+
+A window left looking at the live screen -- one scrolled back a little, or the
+window above a dock -- shows rows the drain is about to rewrite.  Its start is a
+buffer position, and the row under it is deleted and reinserted, so the window
+would show whatever text the redraw happened to leave there.  The cell is kept
+instead and carried across the scroll; see `cooked--map-cell'."))
 
 (defun cooked--capture-viewport ()
   "Snapshot the view, before the render invalidates every part of it."
@@ -356,7 +370,41 @@ The other windows on this buffer that were following the child's cursor."))
    :stale-mark (and cooked-clear-selection-on-output
                     mark-active (mark)
                     (>= (mark) (cooked--screen-start-position)))
-   :others (cooked--following-windows)))
+   :others (cooked--following-windows)
+   :held (cooked--held-windows)))
+
+(defun cooked--held-windows ()
+  "The non-following windows on this buffer whose start is on the live screen.
+Each as (WINDOW . CELL), for `cooked--viewport-held'."
+  (when-let* ((screen (cooked--screen-start-position)))
+    (let ((following (cooked--following-windows))
+          (follow (and (cooked--follow-p) (>= (point) screen)))
+          held)
+      (dolist (w (get-buffer-window-list nil nil t) held)
+        (unless (or (memq w following)
+                    (and follow (eq w (selected-window)))
+                    (cooked--dock-window-p w))
+          (when-let* ((cell (and (>= (window-start w) screen)
+                                 (cooked--screen-cell (window-start w)))))
+            (push (cons w cell) held)))))))
+
+(defun cooked--map-cell (cell spans batch-start)
+  "Where the text that was at screen CELL before this drain is now.
+
+SPANS is the drain's `:scrolled-spans', (START . CHARS) per row that left the
+screen, oldest first; BATCH-START is where that scrollback text was inserted.
+The screen moved up by one row for each of them, so a row still on it is that
+many rows higher, and one that left is in the batch at its span.  With nothing
+scrolled the cell itself is the answer."
+  (let ((n (length spans))
+        (row (car cell))
+        (col (cdr cell)))
+    (if (or (null batch-start) (>= row n))
+        (save-excursion
+          (cooked--goto-screen-cell (cons (- row (if batch-start n 0)) col))
+          (point))
+      (let ((span (nth row spans)))
+        (min (point-max) (+ batch-start (car span) (min col (cdr span))))))))
 
 (defun cooked--apply-levels (update)
   "Adopt UPDATE's levels: the state as of this drain, for redisplay to read."
@@ -371,6 +419,27 @@ The other windows on this buffer that were following the child's cursor."))
   (cooked--set-alt (plist-get update :alt))
   (cooked--set-mode (plist-get update :mode)))
 
+(defvar-local cooked--batch-start nil
+  "Where this drain's scrollback was inserted, or nil if nothing scrolled.")
+
+(defvar-local cooked--scrolled-spans nil
+  "This drain's `:scrolled-spans'; see `cooked--map-cell'.")
+
+(defun cooked--restore-held-windows (viewport)
+  "Put each held window of VIEWPORT back on the text it was showing.
+Its vertical scroll is kept: a pixel-scrolled window stays where it was to the
+pixel, which is what keeps a scroll in progress from being fought."
+  (pcase-dolist (`(,w . ,cell) (cooked-viewport-held viewport))
+    (when (and (window-live-p w) (eq (window-buffer w) (current-buffer)))
+      (let ((start (save-excursion
+                     (goto-char (cooked--map-cell cell cooked--scrolled-spans
+                                                  cooked--batch-start))
+                     (line-beginning-position)))
+            (vscroll (window-vscroll w t)))
+        (unless (= start (window-start w))
+          (set-window-start w start t)
+          (unless (zerop vscroll) (set-window-vscroll w vscroll t)))))))
+
 (defun cooked--place-point (viewport)
   "Put point where VIEWPORT says it belongs, now that the render is done.
 
@@ -382,7 +451,12 @@ them, and being yanked to its cursor mid-motion is what this exists to stop.
 The ghost keeps the way back visible; `cooked--snap-to-cursor' takes it."
   (let ((editing (cooked-viewport-editing viewport)))
     (cond ((cooked-viewport-wandered viewport)
-           (cooked--goto-screen-cell (cooked-viewport-wandered viewport)))
+           ;; Carried across the scroll: the same text, not the same cell, which
+           ;; after a scroll holds newer text -- a point parked on a main screen
+           ;; that keeps scrolling otherwise walks down through the transcript.
+           (goto-char (cooked--map-cell (cooked-viewport-wandered viewport)
+                                        cooked--scrolled-spans
+                                        cooked--batch-start)))
           ;; Clamped for the drain that ends the prompt, where
           ;; `cooked--restore-pending-input' declined and left no region for the
           ;; offset to be an offset into.
@@ -392,6 +466,10 @@ The ghost keeps the way back visible; `cooked--snap-to-cursor' takes it."
                         (cooked--point-after-input))))
           ((cooked-viewport-follow viewport)
            (goto-char (cooked--point-after-input))))))
+
+(defvar cooked--after-scroll-hook nil
+  "Run in the buffer after each drain has scrolled its windows.
+cooked-dock.el keeps its docks pinned from here.")
 
 (defun cooked--restore-scroll-settings ()
   "Put back the scroll settings `cooked-mode' gave this buffer, if they moved.
@@ -430,7 +508,8 @@ scrolling that window would be a bug rather than a courtesy."
         (others (cooked-viewport-others viewport)))
     (if cooked--alt
         (cooked--pin-alt-screen (append here others))
-      (cooked--scroll-transcript viewport here others))))
+      (cooked--scroll-transcript viewport here others)))
+  (run-hooks 'cooked--after-scroll-hook))
 
 (defun cooked--pin-alt-screen (windows)
   "Put the alternate screen back at the top of each of WINDOWS.
@@ -564,6 +643,8 @@ and the region shaped before anything measures it."
                         (cooked--render-scrolled scrolled)))
          (rendered (cooked--render-rows (plist-get update :rows)
                                         (plist-get update :alt))))
+    (setq cooked--batch-start batch-start
+          cooked--scrolled-spans (plist-get update :scrolled-spans))
     (cooked--apply-levels update)
     ;; Cleared before the events, so a drain that both scrolls and then clears
     ;; stays pinned.
@@ -599,6 +680,7 @@ and the region shaped before anything measures it."
     ;; has to be the last thing to speak about where point ends up.
     (when (cooked-viewport-stale-mark viewport) (cooked--deactivate-mark))
     (cooked--place-point viewport)
+    (cooked--restore-held-windows viewport)
     ;; Recorded, not merely left in the buffer: a window not showing this buffer
     ;; has a stale point marker Emacs will restore on the way back, over the top
     ;; of this.  See `cooked--point'.

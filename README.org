@@ -391,6 +391,21 @@ The moment the program takes the alternate screen or asks for the mouse, all of 
 switches off and every key is the program's again. ~cooked-navigable-programs~ can narrow
 it to named programs, or turn it off.
 
+*The input stays in view.* Scroll away from the bottom and the program's live rows — its
+input, and the status and spinner rows around it — are split off into a /dock/ under the
+window, pinned there, while the window above scrolls freely through the rest. Nothing
+moves when it happens, and the program is not resized for it: the two windows are one
+terminal. While docked:
+
+- Output never moves the window you are reading, wheel and pixel scrolling included.
+- Typing goes to the dock, so a reply can be written with the history still in view.
+  =M-v=, =C-p= and the other ways out lead from the dock back up into the history.
+- =RET= sent from the dock, scrolling back down to it, or moving point onto it puts the
+  two back together, following the program again.
+
+Which rows are live is decided from the terminal alone: the cursor's row, everything
+below it, and ~cooked-dock-context-rows~ above it. ~cooked-dock~ turns it off.
+
 The program is left entirely to itself: cooked sets nothing in its environment, so its
 settings, memory and updates behave exactly as in any terminal. Many agent CLIs offer
 both an inline renderer and a fullscreen one, chosen in their own settings:
