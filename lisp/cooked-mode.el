@@ -1990,6 +1990,12 @@ to the child verbatim."
   ;; would answer for a cooked buffer: see the `comint-completion-at-point'
   ;; removal below.
   (visual-line-mode -1)
+  ;; A terminal draws a no-break space as a space.  Emacs by default marks one
+  ;; with the `nobreak-space' face -- a coloured underline, meant for finding a
+  ;; stray U+00A0 in source -- and programs use them deliberately: an agent's
+  ;; prompt and tree glyphs are followed by one, which showed up as a red `_'
+  ;; on every such line.
+  (setq-local nobreak-char-display nil)
   (setq-local scroll-conservatively 101
               ;; Both margins to zero, as eat and vterm also set them.  A
               ;; terminal's viewport is the whole window: the child decides what

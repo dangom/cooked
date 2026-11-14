@@ -558,6 +558,15 @@ repaired by the child\='s next output, or by the next command in its own buffer.
       (should (zerop (window-vscroll other t)))
       (delete-window other))))
 
+(ert-deftest cooked-draws-a-no-break-space-as-a-space ()
+  "Regression: Emacs marks U+00A0 with the `nobreak-space' face, a coloured
+underline, and agents print one after their prompt and tree glyphs -- so every
+such line showed a stray red `_'.  A terminal draws it as a space."
+  (with-temp-buffer
+    (cooked-mode)
+    (should (local-variable-p 'nobreak-char-display))
+    (should-not nobreak-char-display)))
+
 (ert-deftest cooked-clearing-the-screen-scrolls-the-transcript-out-of-view ()
   "`CSI 2 J' archives the screen rather than losing it, because history is Emacs'
 -- so nothing scrolls out of view on its own, and `clear' or the shell's `C-l'
