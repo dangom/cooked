@@ -1527,8 +1527,9 @@ pushed down by the insertion onto the row that now has its old index, and a mark
 row that left the screen collapses to the screen's start when that row is rewritten. So
 each annotation also keeps the position and text of its rows when last seen in place, and
 when a render leaves other text under its markers while that position still holds that
-text, it moves back. Text found at neither was repainted in place, and the annotation
-stays and adopts it. This is checked only for annotations that were on the live screen:
+text, it moves back. Text found at neither was repainted with something else: what was
+annotated is gone, so the annotation is removed and its caller told (`:removed`) -- an
+agent folding the calls it showed one by one into a summary does exactly this. This is checked only for annotations that were on the live screen:
 permanent scrollback is never rewritten.
 
 Emulator-side marks (the OSC 133 mechanism, which survives resizes too) would be the

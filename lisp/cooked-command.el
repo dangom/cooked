@@ -210,6 +210,12 @@ to land in, and its exit status is exactly the one worth chasing."
                   (cooked--command-end-position command)))
             cooked--commands))
 
+(defvar cooked-prompt-positions-functions nil
+  "Functions naming more places for `cooked-previous-command' to stop at.
+Each is called with no arguments in the terminal's buffer and returns a list
+of buffer positions: the prompts of something the shell integration knows
+nothing about -- an agent's, say -- for the same keys to move between.")
+
 (defun cooked--prompt-starts ()
   "Where each command's prompt begins, in buffer order.
 
@@ -222,7 +228,8 @@ were never recorded at all.  It was; only the place to stand was missing.
 Falls back to the output start for a record with no `A' mark, which is the
 best a session without the full integration can do and is exactly what this
 did before.  The live prompt comes last, so there is somewhere for
-`cooked-next-command' to land at the bottom."
+`cooked-next-command' to land at the bottom.  Places named by
+`cooked-prompt-positions-functions' are among them."
   (let ((starts (mapcar (lambda (command)
                           (or (cooked--command-prompt-position command)
                               (cooked--command-start-position command)))
@@ -230,7 +237,17 @@ did before.  The live prompt comes last, so there is somewhere for
     (when-let* ((live (or cooked--command-prompt cooked--prompt-start))
                 (at (marker-position live)))
       (unless (memql at starts) (push at starts)))
-    (sort starts #'<)))
+    (sort (delete-dups (append (cooked--more-prompt-starts) starts)) #'<)))
+
+(defun cooked--more-prompt-starts ()
+  "The positions `cooked-prompt-positions-functions' name, all together."
+  (let (positions)
+    (run-hook-wrapped 'cooked-prompt-positions-functions
+                      (lambda (function)
+                        (setq positions (append (ignore-errors (funcall function))
+                                                positions))
+                        nil))
+    (cl-remove-if-not #'integer-or-marker-p positions)))
 
 (defun cooked--command-region (command &optional outer)
   "The region COMMAND occupies, as a cons of positions.

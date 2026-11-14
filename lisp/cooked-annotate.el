@@ -33,8 +33,9 @@
 ;; So an annotation also remembers where its rows began and what they said, and
 ;; when a render leaves other text under its markers while the remembered
 ;; position still holds the remembered text, it moves back there.  Text found
-;; at neither was repainted in place, and the annotation stays and takes the
-;; new text as its own.  A row in permanent scrollback is never rewritten, so
+;; at neither was repainted with something else, and what was annotated is no
+;; longer there: the annotation is removed, and the caller told if it asked
+;; to be (`:removed').  A row in permanent scrollback is never rewritten, so
 ;; the re-arm only looks at annotations that were on the live screen.
 ;;
 ;; Nothing here reads what the program draws, and nothing is sent to it: an
@@ -81,6 +82,7 @@
   (action nil :documentation "Function called with the annotation, or nil.")
   (face nil :documentation "Face of the fringe mark, or nil for the default.")
   (data nil :documentation "Whatever the caller attached.")
+  (removed nil :documentation "Function called with it if its rows are gone.")
   (text nil :documentation "The text of its rows, when last seen in place.")
   (pos nil :documentation "Where its first row began, when last seen in place.")
   (overlay nil :documentation "The overlay showing it, re-derived as needed."))
@@ -135,7 +137,7 @@ Turned on by `cooked-annotate' the first time a buffer gets one."
 (defun cooked--annotation-heal (annotation)
   "Put ANNOTATION back on its rows if a scroll has pushed its markers off them.
 See the commentary for why that happens and why position, not a search, is
-what finds the rows again."
+what finds the rows again.  Return nil if the rows are gone, else non-nil."
   (let ((text (cooked-annotation-text annotation))
         (pos (cooked-annotation-pos annotation))
         (now (cooked--annotation-current-text annotation)))
@@ -148,9 +150,11 @@ what finds the rows again."
       (set-marker (cooked-annotation-beg annotation) pos)
       (set-marker (cooked-annotation-end annotation)
                   (cooked--annotation-row-start (+ pos (length text)))))
-     (t (setf (cooked-annotation-text annotation) now)))
-    (setf (cooked-annotation-pos annotation)
-          (marker-position (cooked-annotation-beg annotation)))))
+     (t (setq now 'gone)))
+    (if (eq now 'gone)
+        nil
+      (setf (cooked-annotation-pos annotation)
+            (marker-position (cooked-annotation-beg annotation))))))
 
 (defun cooked--annotation-paint (annotation)
   "Make ANNOTATION's overlay agree with its markers; return it."
@@ -184,7 +188,8 @@ On `cooked-row-rendered-functions'.  Annotations are newest first and only
 those that were on the live screen can have been touched, so the walk stops
 at the first one wholly in permanent scrollback that is intact."
   (let ((screen (cooked--screen-start-position))
-        (moved nil))
+        (moved nil)
+        (gone nil))
     (catch 'done
       (dolist (annotation cooked--annotations)
         (let ((overlay (cooked-annotation-overlay annotation))
@@ -195,10 +200,15 @@ at the first one wholly in permanent scrollback that is intact."
                             (cooked--annotation-current-text annotation)))
             (throw 'done nil))
           (let ((before (marker-position (cooked-annotation-beg annotation))))
-            (cooked--annotation-heal annotation)
-            (unless (eql before (marker-position (cooked-annotation-beg annotation)))
-              (setq moved t)))
-          (cooked--annotation-paint annotation))))
+            (if (not (cooked--annotation-heal annotation))
+                (push annotation gone)
+              (unless (eql before (marker-position (cooked-annotation-beg annotation)))
+                (setq moved t))
+              (cooked--annotation-paint annotation))))))
+    (dolist (annotation gone)
+      (cooked-annotation-delete annotation)
+      (when-let* ((removed (cooked-annotation-removed annotation)))
+        (funcall removed annotation)))
     (when moved (cooked--annotation-sort))))
 
 (defun cooked--annotation-sort ()
@@ -210,20 +220,23 @@ at the first one wholly in permanent scrollback that is intact."
                    (or (marker-position (cooked-annotation-beg b)) 0))))))
 
 ;;;###autoload
-(cl-defun cooked-annotate (beg end &key help action face data)
+(cl-defun cooked-annotate (beg end &key help action face data removed)
   "Annotate the rows of output from BEG's to END's in the current buffer.
 
 HELP is tooltip text.  ACTION, if given, is called with the annotation when
 its fringe mark is clicked or RET is pressed on its rows.  FACE colours the
 fringe mark; the default is `cooked-annotation'.  DATA is kept with it, for
-ACTION or anyone else to read with `cooked-annotation-data'.
+ACTION or anyone else to read with `cooked-annotation-data'.  REMOVED, if
+given, is called with the annotation when its rows are repainted with other
+text, which removes it.
 
 Returns the annotation."
   (let* ((first (cooked--annotation-row-start (min beg end)))
          (last (cooked--annotation-row-start (max beg end)))
          (annotation (cooked-annotation--make
                       :beg (copy-marker first) :end (copy-marker last)
-                      :help help :action action :face face :data data)))
+                      :help help :action action :face face :data data
+                      :removed removed)))
     (setf (cooked-annotation-text annotation)
           (cooked--annotation-current-text annotation)
           (cooked-annotation-pos annotation) first)

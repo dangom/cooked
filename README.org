@@ -289,6 +289,11 @@ one user.
                  :action (lambda (annotation) (message "%S" (cooked-annotation-data annotation))))
 #+end_src
 
+Two more seams of the same kind: ~cooked-prompt-positions-functions~ names extra places for
+=C-c C-p= / =C-c C-n= to stop at (an agent's prompts, which the shell integration knows
+nothing about), and ~cooked-paste-string~ pastes text at the program's input the way
+=cooked-paste= pastes a kill — bracketed, its controls removed, not submitted.
+
 ** cooked-project
 
 Scopes a session to the current project root: =cooked-project= reuses one terminal per

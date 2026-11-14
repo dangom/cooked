@@ -504,6 +504,23 @@ a line editor is bound to CR, and so is the far side of tmux."
     (cooked--snap-to-cursor)
     (cooked--send-to-child (cooked--paste-text text)))))
 
+(declare-function cooked-navigate-return "cooked-navigate" ())
+
+(defun cooked-paste-string (text)
+  "Paste TEXT into the child's input, as `cooked-paste' pastes a kill.
+For other packages: bracketed when the child asked for it, its controls
+removed, and nothing submitted.  Goes back to the child's input first when
+point was off reading its output."
+  (cooked--resume-forwarding)
+  (unless (cooked--live-session)
+    (user-error "No live session"))
+  (when (and (fboundp 'cooked-navigate-return)
+             (bound-and-true-p cooked-navigate--reading))
+    (cooked-navigate-return))
+  (if (cooked--input-state-p)
+      (insert text)
+    (cooked--send-paste text)))
+
 (defun cooked-paste ()
   "Paste the most recent kill.
 

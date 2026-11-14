@@ -2,9 +2,10 @@
 
 ;;; Commentary:
 
-;; cooked-annotate.el, against a real child that repaints a row in place and
-;; scrolls its output into scrollback -- the two things that destroy an
-;; overlay on a terminal's rows.
+;; The seams other packages use: cooked-annotate.el, against a real child that
+;; repaints a row in place and scrolls its output into scrollback -- the two
+;; things that destroy an overlay on a terminal's rows -- and the extra prompt
+;; positions and the paste from Lisp.
 
 ;;; Code:
 
@@ -78,16 +79,20 @@ its action with it."
       (should (eq called annotation))
       (should (eq (cooked-annotation-data called) 'payload)))))
 
-(ert-deftest cooked-annotate-survives-a-repaint-of-its-row ()
-  "A row the program rewrites in place loses its overlay with its text; the
-re-arm after the render puts the annotation back on the same row."
+(ert-deftest cooked-annotate-goes-when-its-row-is-repainted ()
+  "A row the program rewrites with other text no longer says what was
+annotated: the annotation is removed, and REMOVED is told."
   (cooked-tests--with-repainting
-    (let ((annotation (cooked-annotate (cooked-tests--row-position "row-b")
-                                       (cooked-tests--row-position "row-b"))))
+    (let* ((told nil)
+           (annotation (cooked-annotate (cooked-tests--row-position "row-b")
+                                        (cooked-tests--row-position "row-b")
+                                        :removed (lambda (a) (setq told a)))))
       (cooked--send cooked--session "R")
       (should (cooked-tests--settle
                (lambda () (cooked-tests--row-position "row-B"))))
-      (should (equal (cooked-tests--annotation-text annotation) "row-B")))))
+      (should (eq told annotation))
+      (should-not (cooked-annotations))
+      (should-not (overlay-buffer (cooked-annotation-overlay annotation))))))
 
 (ert-deftest cooked-annotate-follows-its-rows-into-scrollback ()
   "Output that scrolls the annotated rows into scrollback takes the annotation
@@ -137,6 +142,46 @@ deleted one is gone from the buffer and the list."
       (cooked-annotation-delete c)
       (should (equal (cooked-annotations) (list a)))
       (should-not (cooked-annotation-at (cooked-tests--row-position "row-c"))))))
+
+(ert-deftest cooked-prompt-positions-functions-are-stopped-at ()
+  "Places another package names are stopped at by C-c C-p and C-c C-n too."
+  (with-temp-buffer
+    (cooked-mode)
+    (let ((inhibit-read-only t))
+      (insert "> one\nout\n> two\nout\n"))
+    (add-hook 'cooked-prompt-positions-functions
+              (lambda () (list (cooked-tests--row-position "> one")
+                               (cooked-tests--row-position "> two")))
+              nil t)
+    (goto-char (point-max))
+    (cooked-previous-command)
+    (should (= (point) (cooked-tests--row-position "> two")))
+    (cooked-previous-command)
+    (should (= (point) (cooked-tests--row-position "> one")))
+    (cooked-next-command)
+    (should (= (point) (cooked-tests--row-position "> two")))))
+
+(ert-deftest cooked-paste-string-pastes-without-submitting ()
+  "Text pasted from Lisp reaches the child as one bracketed paste, its
+controls gone, and nothing typed after it."
+  (cooked-tests--with-session
+      (list "python3" "-I" "-c"
+            (concat "import os, sys, tty\n"
+                    "tty.setraw(0)\n"
+                    "sys.stdout.write('\\x1b[?2004h> ')\n"
+                    "sys.stdout.flush()\n"
+                    "while True:\n"
+                    "    b = os.read(0, 256)\n"
+                    "    if not b:\n"
+                    "        break\n"
+                    "    sys.stdout.write(repr(b) + ' ')\n"
+                    "    sys.stdout.flush()\n"))
+    (should (cooked-tests--settle (lambda () (string-match-p ">" (cooked-tests--text)))))
+    (should (cooked-tests--settle (lambda () (cooked--bracketed-paste-p cooked--session))))
+    (cooked-paste-string "fix it\e[31m")
+    (should (cooked-tests--settle
+             (lambda () (string-match-p (regexp-quote "\\x1b[200~fix it[31m\\x1b[201~")
+                                        (cooked-tests--text)))))))
 
 (provide 'cooked-tests-annotate)
 ;;; cooked-tests-annotate.el ends here
