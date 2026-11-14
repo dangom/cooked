@@ -554,11 +554,40 @@ real text off the top."
          (foot (if (and (= foot (point-max)) (> foot (point-min))
                         (eq (char-before foot) ?\n))
                    (1- foot)
-                 foot)))
-    (save-excursion
-      (goto-char foot)
-      (vertical-motion (- (1- (cooked--window-rows window))) window)
-      (point))))
+                 foot))
+         (body (window-body-height window t))
+         (start (save-excursion
+                  (goto-char foot)
+                  (vertical-motion (- (1- (cooked--window-rows window))) window)
+                  (point))))
+    ;; Counted in rows, then checked in pixels: a row taller than the default
+    ;; line -- a fallback font's glyph, an emoji, a picture -- pushes the foot
+    ;; below the window by the difference, and the last row, which is the one
+    ;; that matters, is the one cut off.  Each row given up at the top buys
+    ;; that row's height back at the bottom.
+    (while (and (< start foot)
+                (> (cooked--rows-height window start foot) body))
+      (setq start (save-excursion (goto-char start)
+                                  (vertical-motion 1 window)
+                                  (point))))
+    start))
+
+(defun cooked--rows-height (window from to)
+  "The pixels WINDOW takes to show the rows from FROM's through TO's.
+
+`window-text-pixel-size' gets the height of the first row wrong when it starts
+measuring there -- by twelve pixels, under `line-spacing', for a row beside an
+image -- so it is asked from the row above FROM, twice, and the error cancels:
+the rows wanted are the difference between the two."
+  (save-excursion
+    (goto-char to)
+    (let ((end (line-end-position)))
+      (goto-char from)
+      (if (zerop (vertical-motion -1 window))
+          (cdr (window-text-pixel-size window from end))
+        (let ((anchor (point)))
+          (- (cdr (window-text-pixel-size window anchor end))
+             (cdr (window-text-pixel-size window anchor (1- from)))))))))
 
 (defun cooked--clamp-overscroll ()
   "Undo a scroll past the bottom of a window that is following the output.
@@ -573,7 +602,13 @@ The pixel vscroll goes too: a precision scroll leaves a remainder that
 survives being told where the window starts.
 
 Only while following, and only downward: a window being read is the user's to
-scroll, and scrolling it down to the input is how reading ends."
+scroll, and scrolling it down to the input is how reading ends.
+
+A pixel scroll -- ultra-scroll, `pixel-scroll-precision-mode' -- moves the
+vertical scroll first and the start only once a whole row has gone by, so at
+the pinned start any vertical scroll at all is already past the bottom.
+Clamping only a start beyond the pin let each notch slide the text up by a few
+pixels and the row after snap it back: a sawtooth as fast as the wheel turned."
   (when (and cooked--session (not cooked--alt) (cooked--follow-p))
     (let ((window (selected-window)))
       (when (eq (window-buffer window) (current-buffer))
@@ -583,8 +618,10 @@ scroll, and scrolling it down to the input is how reading ends."
                        ;; pin, and on purpose; see `cooked--scroll-transcript'.
                        (max (cooked--bottom-start window)
                             (cooked--screen-start-position))
-                     (cooked--bottom-start window))))
-          (when (> (window-start window) top)
+                     (cooked--bottom-start window)))
+              (start (window-start window)))
+          (when (or (> start top)
+                    (and (= start top) (> (window-vscroll window t) 0)))
             (set-window-vscroll window 0 t)
             (set-window-start window top t)))))))
 
@@ -637,7 +674,12 @@ and correcting for it once per drain is the oscillation itself."
                   (and (< top (window-start w))
                        (let ((end (window-end w)))
                          (and end (>= end (point-max))))))
-          (set-window-start w top t))))))
+          (set-window-start w top t))
+        ;; A window that follows has its last row on its last line, to the
+        ;; pixel: a vertical scroll left over from a pixel scroll would hold
+        ;; the bottom row part-way out of view for as long as the output ran.
+        (unless (zerop (window-vscroll w t))
+          (set-window-vscroll w 0 t))))))
 
 (defun cooked--scroll-transcript (viewport here others)
   "Scroll the transcript in HERE and OTHERS as VIEWPORT asks."

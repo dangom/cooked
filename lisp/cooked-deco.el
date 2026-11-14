@@ -252,9 +252,8 @@ size from font size — the very misalignment this feature exists to remove.
 Height comes from `window-default-line-height', not `window-font-height', for
 the reason `cooked--window-rows' already gives: the line box is what a row
 actually occupies and includes `line-spacing', while the font height does not.
-A bitmap sized to the font leaves exactly `line-spacing' pixels of background
-beneath every glyph, breaking the continuous vertical borders this exists to
-produce — the same defect `indent-bars' documents for box characters."
+This is the cell; a box glyph is drawn `line-spacing' shorter than it, because
+Emacs adds the spacing under an image too -- see `cooked--extra-line-spacing'."
   (cons (window-font-width window 'default)
         (window-default-line-height window)))
 
@@ -378,9 +377,31 @@ at exactly the cell size, so letting that apply would resample a pixel-exact
 10x20 stroke up to 12x24 inside a 10x20 cell: borders stop meeting at the cell
 edge and the strokes blur into something no better than the font glyphs this
 replaces."
-  (cooked--cached-bounded cooked--deco-image-cache cooked-box-glyph-run-cache-limit
-      (list bits (car size) (cdr size) phase (or count 1))
-    (cooked--box-glyph-image-1 bits window size phase (or count 1))))
+  (let ((size (cons (car size)
+                    (max 1 (- (cdr size) (cooked--extra-line-spacing window))))))
+    (cooked--cached-bounded cooked--deco-image-cache cooked-box-glyph-run-cache-limit
+        (list bits (car size) (cdr size) phase (or count 1))
+      (cooked--box-glyph-image-1 bits window size phase (or count 1)))))
+
+(defun cooked--extra-line-spacing (window)
+  "The pixels `line-spacing' adds under each of WINDOW's rows, or this buffer's.
+
+A box glyph is drawn this much shorter than the cell, because Emacs adds the
+spacing under every line whatever is on it: a bitmap the full height of the
+line box made its row that much taller than a row of text, and no property can
+take it back -- `line-spacing' and `line-height' on a newline only ever add.
+Rows of unequal height are rows a terminal does not have, and everything that
+counts rows in pixels -- the bottom pin, the dock, the child's own size --
+came out a little wrong on every screen with a border on it.  A vertical rule
+now shows the same hairline gap a font's own box characters show under
+`line-spacing'; with none, the glyph fills the cell as before."
+  (if (window-live-p window)
+      (max 0 (- (window-default-line-height window)
+                (window-default-font-height window)))
+    (pcase line-spacing
+      ((pred integerp) (max 0 line-spacing))
+      ((pred floatp) (max 0 (truncate (* (frame-char-height) line-spacing))))
+      (_ 0))))
 
 (defun cooked--uncolored (image)
   "IMAGE with any `:foreground\=' or `:background\=' removed.

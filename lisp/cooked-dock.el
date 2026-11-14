@@ -45,6 +45,8 @@
 (declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
 (declare-function cooked--pin-transcript-bottom "cooked-render"
                   (windows &optional pos bottom))
+(declare-function cooked--bottom-start "cooked-render" (window &optional foot))
+(declare-function cooked--rows-height "cooked-render" (window from to))
 (defvar cooked--after-scroll-hook)
 
 (defcustom cooked-dock t
@@ -118,21 +120,17 @@ A window too short to leave the rest for reading is not docked at all."
 (defun cooked-dock--body-pixels (window rows)
   "The body height, in pixels, that shows ROWS live rows in WINDOW.
 
-Measured, not multiplied.  A row is the default line height only nominally:
-the box-drawing rules an agent draws round its input, a fallback glyph, the
-cursor's row, `line-spacing' rounding -- any of them makes a row a pixel or
-two taller, and a dock sized by multiplication came up short and clipped its
-last row, which is the status line under the input.  When ROWS covers the
-whole live region the region is laid out and measured; a dock capped below
-that has no last row to protect, and keeps the nominal size."
+Measured, not multiplied, when ROWS is the whole live region: a row is the
+default line height only nominally -- a fallback font's glyph, an emoji, the
+cursor's row can each make one a pixel or two taller -- and a dock sized by
+multiplication came up short and clipped its last row, which is the status line
+under the input.  A dock capped below the live region has no last row to
+protect, and keeps the nominal size."
   (let ((nominal (* rows (window-default-line-height window))))
     (if (< rows (cooked-dock--rows))
         nominal
-      (max nominal
-           (cdr (window-text-pixel-size
-                 window (cooked-dock--live-top)
-                 (save-excursion (goto-char (cooked-dock--foot))
-                                 (line-end-position))))))))
+      (max nominal (cooked--rows-height window (cooked-dock--live-top)
+                                        (cooked-dock--foot))))))
 
 (defun cooked-dock--pixels (window rows)
   "The total pixel height of a window on WINDOW's buffer showing ROWS rows."
@@ -186,13 +184,11 @@ that has no last row to protect, and keeps the nominal size."
 (defun cooked-dock--pin (dock)
   "Show the live rows in DOCK: its last row on the last row with text."
   (with-current-buffer (window-buffer dock)
-    (let* ((rows (max 1 (cooked--window-rows-of dock)))
-           (top (save-excursion
-                  (goto-char (cooked-dock--foot))
-                  (vertical-motion (- (1- rows)) dock)
-                  (point))))
+    (let ((top (cooked--bottom-start dock (cooked-dock--foot))))
       (unless (eq dock (selected-window))
         (set-window-point dock (max top (cooked--cursor-position))))
+      (unless (zerop (window-vscroll dock t))
+        (set-window-vscroll dock 0 t))
       (unless (= top (window-start dock))
         (set-window-start dock top t)))))
 
@@ -236,19 +232,32 @@ rather than asked of `window-end', which is only as fresh as the last redisplay
     (cons (/ px lh) (/ (+ px lh -1) lh))))
 
 (defun cooked-dock--shows-bottom-p (window)
-  "Whether WINDOW, undocked, shows the whole of the last row with text."
-  (>= (cooked-dock--row window (1- (car (cooked-dock--visible-rows window))))
-      (cooked-dock--foot)))
+  "Whether WINDOW, undocked, shows the whole of the last row with text.
+In pixels, from the window's start and its vertical scroll, rather than asked of
+`window-end', which is only as fresh as the last redisplay -- and these
+questions are asked between a command and the redisplay after it."
+  (let ((start (window-start window))
+        (foot (cooked-dock--foot)))
+    (or (> start foot)
+        (<= (- (cooked--rows-height window start foot)
+               (window-vscroll window t))
+            (window-body-height window t)))))
 
 (defun cooked-dock--reached-p (window)
   "Whether docked WINDOW has been scrolled down into its dock's rows.
 
 Into, not onto: a window whose last row is the one just above the dock is
 exactly what docking leaves behind, and treating that as arrival would undock
-it on the very next scroll.  One row -- or one pixel -- further and the window
-is showing a live row, and the two are put back together where they meet."
-  (>= (cooked-dock--row window (1- (cdr (cooked-dock--visible-rows window))))
-      (cooked-dock--live-top)))
+it on the very next scroll.  One pixel further and the window is showing a live
+row, and the two are put back together where they meet."
+  (let ((start (window-start window))
+        (live (cooked-dock--live-top)))
+    (or (>= start live)
+        (< (- (cooked--rows-height window start
+                                   (save-excursion (goto-char live)
+                                                   (line-beginning-position 0)))
+              (window-vscroll window t))
+           (window-body-height window t)))))
 
 ;;;; Following the user
 
