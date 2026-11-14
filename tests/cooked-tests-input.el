@@ -435,13 +435,9 @@ different things to be looking at."
             (should (string-search (cdr case) (cooked--mode-line)))
           (should-not (string-match-p "still\\|semi\\|frozen" (cooked--mode-line))))))))
 
-(ert-deftest cooked-mode-line-names-the-program-without-shell-integration ()
-  "The `bare\= session is exactly where naming the program matters most.
-
-A title is the shell's own summary and needs the snippet loaded; the foreground
-process group needs nothing at all.  So the fallback is what tells `htop\= from a
-shell editing its own line -- the pair the state word alone has never been able
-to separate, and the one this whole indicator is judged on."
+(ert-deftest cooked-mode-line-shows-only-unusual-states-by-default ()
+  "By default the state word is left out where it is the expected answer -- a
+program reading its own keys -- and shown where it changes what typing does."
   (with-temp-buffer
     (setq-local cooked--mode 'raw
                 cooked--alt nil
@@ -452,23 +448,54 @@ to separate, and the one this whole indicator is judged on."
                 cooked--exit nil
                 cooked--title nil
                 cooked--foreground-label "htop")
-    (should (equal (substring-no-properties (cooked--mode-line)) " raw htop"))
-    ;; A title outranks it: the shell knows the arguments, `comm\= knows a name.
-    (setq-local cooked--title "make -j8 world")
-    (should (equal (substring-no-properties (cooked--mode-line))
-                   " raw make -j8 world"))
-    ;; Never both -- two accounts of one thing, and only room for the better.
-    (should-not (string-search "htop" (cooked--mode-line)))
-    ;; And no title at all when the buffer is already named after it.
-    (let ((cooked-buffer-name-auto-update t)
-          (cooked-buffer-name "*cooked: %t*"))
-      (should (equal (substring-no-properties (cooked--mode-line)) " raw htop")))
-    ;; But turning auto-update on buys nothing if the template never shows the
-    ;; title -- suppressing it here would just lose it from both places.
-    (let ((cooked-buffer-name-auto-update t)
-          (cooked-buffer-name "*cooked: %p*"))
+    (should (equal (substring-no-properties (cooked--mode-line)) " htop"))
+    (setq-local cooked--alt t)
+    (should (string-prefix-p " alt" (substring-no-properties (cooked--mode-line))))))
+
+(ert-deftest cooked-mode-line-drops-a-title-s-leading-symbols ()
+  "A status glyph in front of a title is dropped; an ASCII title is untouched."
+  (should (equal (cooked--mode-line-clean-title "\u2733 Claude Code") "Claude Code"))
+  (should (equal (cooked--mode-line-clean-title "\u2802 Claude Code") "Claude Code"))
+  (should (equal (cooked--mode-line-clean-title "~/src") "~/src"))
+  (should (equal (cooked--mode-line-clean-title "\u00e9t\u00e9 notes") "\u00e9t\u00e9 notes"))
+  (let ((cooked-mode-line-strip-title-symbols nil))
+    (should (equal (cooked--mode-line-clean-title "\u2733 x") "\u2733 x"))))
+
+(ert-deftest cooked-mode-line-names-the-program-without-shell-integration ()
+  "The `bare\= session is exactly where naming the program matters most.
+
+A title is the shell's own summary and needs the snippet loaded; the foreground
+process group needs nothing at all.  So the fallback is what tells `htop\= from a
+shell editing its own line -- the pair the state word alone has never been able
+to separate, and the one this whole indicator is judged on."
+  (let ((cooked-mode-line-states t))
+    (with-temp-buffer
+      (setq-local cooked--mode 'raw
+                  cooked--alt nil
+                  cooked--semantic nil
+                  cooked--semantic-seen nil
+                  cooked--host nil
+                  cooked--completion-nonce nil
+                  cooked--exit nil
+                  cooked--title nil
+                  cooked--foreground-label "htop")
+      (should (equal (substring-no-properties (cooked--mode-line)) " raw htop"))
+      ;; A title outranks it: the shell knows the arguments, `comm\= knows a name.
+      (setq-local cooked--title "make -j8 world")
       (should (equal (substring-no-properties (cooked--mode-line))
-                     " raw make -j8 world")))))
+                     " raw make -j8 world"))
+      ;; Never both -- two accounts of one thing, and only room for the better.
+      (should-not (string-search "htop" (cooked--mode-line)))
+      ;; And no title at all when the buffer is already named after it.
+      (let ((cooked-buffer-name-auto-update t)
+            (cooked-buffer-name "*cooked: %t*"))
+        (should (equal (substring-no-properties (cooked--mode-line)) " raw htop")))
+      ;; But turning auto-update on buys nothing if the template never shows the
+      ;; title -- suppressing it here would just lose it from both places.
+      (let ((cooked-buffer-name-auto-update t)
+            (cooked-buffer-name "*cooked: %p*"))
+        (should (equal (substring-no-properties (cooked--mode-line))
+                       " raw make -j8 world"))))))
 
 (ert-deftest cooked-mode-line-names-a-job-but-not-the-shell-itself ()
   "The suppression is keyed on which process, not on which policy.
@@ -484,22 +511,23 @@ being typed will be read by.
 canonical, so cooked reads it as `edit\=' -- correctly, it is a line being edited
 -- and that is exactly the case the state word alone cannot distinguish from a
 shell prompt."
-  (skip-unless (executable-find "zsh"))
-  (cooked-tests--with-zsh
-    (cooked--refresh-keymap)
-    ;; Assertions on the segments rather than the whole indicator: whether the
-    ;; input mode contributes a `semi\=' tag is evil\='s business and orthogonal
-    ;; to this, and a suite that has loaded evil must not fail this test.
-    (should-not cooked--foreground-label)
-    (should (string-prefix-p " edit" (substring-no-properties (cooked--mode-line))))
-    (should-not (string-search "zsh" (cooked--mode-line)))
-    (goto-char cooked--input-end)
-    (insert "sleep 20")
-    (cooked-send-input)
-    (should (cooked-tests--settle (lambda () cooked--foreground-label)))
-    (cooked--refresh-keymap)
-    (should (equal cooked--foreground-label "sleep"))
-    (should (string-search "sleep" (cooked--mode-line)))))
+  (let ((cooked-mode-line-states t))
+    (skip-unless (executable-find "zsh"))
+    (cooked-tests--with-zsh
+      (cooked--refresh-keymap)
+      ;; Assertions on the segments rather than the whole indicator: whether the
+      ;; input mode contributes a `semi\=' tag is evil\='s business and orthogonal
+      ;; to this, and a suite that has loaded evil must not fail this test.
+      (should-not cooked--foreground-label)
+      (should (string-prefix-p " edit" (substring-no-properties (cooked--mode-line))))
+      (should-not (string-search "zsh" (cooked--mode-line)))
+      (goto-char cooked--input-end)
+      (insert "sleep 20")
+      (cooked-send-input)
+      (should (cooked-tests--settle (lambda () cooked--foreground-label)))
+      (cooked--refresh-keymap)
+      (should (equal cooked--foreground-label "sleep"))
+      (should (string-search "sleep" (cooked--mode-line))))))
 
 (ert-deftest cooked-mode-line-asks-the-os-nothing ()
   "`cooked--mode-line\= runs from an `:eval\= on every redisplay, so it must be a
@@ -507,21 +535,22 @@ pure function of buffer-locals.  The foreground program is the one fact in it
 that has to come from outside, and it is cached for exactly that reason -- a
 `tcgetpgrp\= and a `process-attributes\= per frame to render one word is a cost
 nobody asked for, and easy to reintroduce by inlining the obvious call."
-  (with-temp-buffer
-    (setq-local cooked--mode 'raw
-                cooked--alt nil
-                cooked--semantic nil
-                cooked--semantic-seen nil
-                cooked--host nil
-                cooked--completion-nonce nil
-                cooked--exit nil
-                cooked--title nil
-                cooked--foreground-label "htop")
-    (cl-letf (((symbol-function 'process-attributes)
-               (lambda (&rest _) (ert-fail "mode line called process-attributes")))
-              ((symbol-function 'cooked--foreground-pid)
-               (lambda (&rest _) (ert-fail "mode line called cooked--foreground-pid"))))
-      (should (equal (substring-no-properties (cooked--mode-line)) " raw htop")))))
+  (let ((cooked-mode-line-states t))
+    (with-temp-buffer
+      (setq-local cooked--mode 'raw
+                  cooked--alt nil
+                  cooked--semantic nil
+                  cooked--semantic-seen nil
+                  cooked--host nil
+                  cooked--completion-nonce nil
+                  cooked--exit nil
+                  cooked--title nil
+                  cooked--foreground-label "htop")
+      (cl-letf (((symbol-function 'process-attributes)
+                 (lambda (&rest _) (ert-fail "mode line called process-attributes")))
+                ((symbol-function 'cooked--foreground-pid)
+                 (lambda (&rest _) (ert-fail "mode line called cooked--foreground-pid"))))
+        (should (equal (substring-no-properties (cooked--mode-line)) " raw htop"))))))
 
 (ert-deftest cooked-mode-line-stops-describing-a-dead-session ()
   "Buffer-locals do not decay.  A child that exited ten minutes ago leaves

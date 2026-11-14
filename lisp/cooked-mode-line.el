@@ -161,6 +161,25 @@ nothing `secret\=' does not already imply."
       ('alt "alt")
       (_ "raw"))))
 
+(defcustom cooked-mode-line-states '("alt" "secret")
+  "Which keyboard-state words the mode line shows, or t for all of them.
+
+The state word says who owns the keyboard -- see `cooked--mode-line-state'.
+Most of the time that is the expected answer: Emacs editing a prompt (`edit'),
+a shell editing its own (`prompt'), a command running (`run'), a program
+reading keys itself (`raw').  The default shows only the two that change what
+typing does in a way worth seeing: a full-screen program (`alt') and a
+password being read (`secret').  t shows every state, which is what debugging
+cooked wants."
+  :type '(choice (const :tag "All states" t)
+                 (repeat (string :tag "State word")))
+  :group 'cooked)
+
+(defun cooked--mode-line-show-state-p (state)
+  "Whether the mode line shows STATE; see `cooked-mode-line-states'."
+  (or (eq cooked-mode-line-states t)
+      (member state cooked-mode-line-states)))
+
 (defun cooked--mode-line-subject ()
   "What the child is running, in as many words as are known.
 
@@ -176,11 +195,32 @@ the better one.  The title also stands down when
 `cooked--buffer-name-shows-title-p\=' says the buffer is already named after
 it, so printing it again would only spend columns on a word already on
 screen."
-  (or (and (not (cooked--buffer-name-shows-title-p))
-           cooked--title
-           (not (string-empty-p cooked--title))
-           cooked--title)
-      cooked--foreground-label))
+  (let ((title (and cooked--title (cooked--mode-line-clean-title cooked--title))))
+    (or (and (not (cooked--buffer-name-shows-title-p))
+             title
+             (not (string-empty-p title))
+             title)
+        cooked--foreground-label)))
+
+(defcustom cooked-mode-line-strip-title-symbols t
+  "Whether to drop the symbols a program puts in front of its title.
+
+Programs decorate their titles with status glyphs -- an agent shows a star when
+idle and a spinner while it works -- which is a terminal tab's business more
+than a mode line's, and a glyph borrowed from a fallback font is taller than
+the text around it, so it can make a header or mode line taller than its
+neighbours.  Non-nil, the default, drops a leading run of characters that are
+neither ASCII nor letters or digits, with the space after it; an ASCII title
+such as \"~/src\" is never touched."
+  :type 'boolean
+  :group 'cooked)
+
+(defun cooked--mode-line-clean-title (title)
+  "TITLE as the mode line shows it; see `cooked-mode-line-strip-title-symbols'."
+  (if cooked-mode-line-strip-title-symbols
+      (replace-regexp-in-string
+       "\\`\\(?:[^[:ascii:][:alnum:]]\\|[[:space:]]\\)+" "" title t t)
+    title))
 
 (defun cooked--mode-line-literal (string)
   "STRING as the mode line will show it verbatim.
@@ -216,12 +256,14 @@ where the program's had been asked for."
        ;; `mouse-face' run covers the word and not the gap before it -- the
        ;; mode line's own clickable segments pad from the outside for the same
        ;; reason, and a highlight that starts a column early reads as sloppy.
-       " "
-       (apply #'propertize state
-              (cooked--mode-line-click
-               #'cooked-toggle-peek
-               "cooked: who owns the keyboard.  mouse-1: peek (C-c C-v)"))
-       (cooked--mode-line-bare state)
+       (when (cooked--mode-line-show-state-p state)
+         (concat
+          " "
+          (apply #'propertize state
+                 (cooked--mode-line-click
+                  #'cooked-toggle-peek
+                  "cooked: who owns the keyboard.  mouse-1: peek (C-c C-v)"))
+          (cooked--mode-line-bare state)))
        (pcase cooked--input-mode
          ('semi (propertize " semi" 'face 'shadow))
          ('still (propertize " still" 'face 'cooked-still))
