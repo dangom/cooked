@@ -1329,37 +1329,38 @@ The `seen\=' column is not decoration.  A session that has never had a mark is a
 different situation from one that is merely between them, and the indicator says
 so: everything else here can be inferred afresh each prompt, but \"this host has
 no integration at all\" only exists as a latch."
-  (with-temp-buffer
-    (pcase-dolist (`(,mode ,alt ,semantic ,seen ,policy ,owns ,indicator)
-                   ;; mode      alt  semantic  seen  policy   owns  mode line
-                   '((cooked    nil  nil       nil   cooked   t     " edit bare")
-                     (cooked    nil  output    t     cooked   t     " edit")
-                     ;; No `bare\=' beside `raw\=': that word is reached only
-                     ;; through the fallback, which is this same condition.
-                     (raw       nil  nil       nil   raw      nil   " raw")
-                     ;; A mark has arrived and this is not a prompt, so the shell
-                     ;; is running something and said so: `command', not a guess.
-                     (raw       nil  output    t     command  nil   " run")
-                     ;; A shell prompt: termios says raw, OSC 133 says otherwise.
-                     (raw       nil  input     t     cooked   t     " edit")
-                     (secret    nil  nil       nil   raw      nil   " secret bare")
-                     ;; The case that used to strand the keyboard in Emacs: a
-                     ;; full-screen program starting straight from a prompt.
-                     (raw       t    input     t     alt      nil   " alt")
-                     (cooked    t    input     t     alt      nil   " alt")
-                     (raw       t    nil       nil   alt      nil   " alt bare")))
-      (setq-local cooked--mode mode
-                  cooked--alt alt
-                  cooked--semantic semantic
-                  cooked--semantic-seen seen
-                  cooked--host nil
-                  cooked--completion-nonce nil
-                  cooked--title nil
-                  cooked--foreground-label nil
-                  cooked--exit nil)
-      (should (eq (cooked--policy) policy))
-      (should (eq (and (cooked--input-state-p) t) owns))
-      (should (equal (substring-no-properties (cooked--mode-line)) indicator)))))
+  (let ((cooked-mode-line-states t))
+    (with-temp-buffer
+      (pcase-dolist (`(,mode ,alt ,semantic ,seen ,policy ,owns ,indicator)
+                     ;; mode      alt  semantic  seen  policy   owns  mode line
+                     '((cooked    nil  nil       nil   cooked   t     " edit bare")
+                       (cooked    nil  output    t     cooked   t     " edit")
+                       ;; No `bare\=' beside `raw\=': that word is reached only
+                       ;; through the fallback, which is this same condition.
+                       (raw       nil  nil       nil   raw      nil   " raw")
+                       ;; A mark has arrived and this is not a prompt, so the shell
+                       ;; is running something and said so: `command', not a guess.
+                       (raw       nil  output    t     command  nil   " run")
+                       ;; A shell prompt: termios says raw, OSC 133 says otherwise.
+                       (raw       nil  input     t     cooked   t     " edit")
+                       (secret    nil  nil       nil   raw      nil   " secret bare")
+                       ;; The case that used to strand the keyboard in Emacs: a
+                       ;; full-screen program starting straight from a prompt.
+                       (raw       t    input     t     alt      nil   " alt")
+                       (cooked    t    input     t     alt      nil   " alt")
+                       (raw       t    nil       nil   alt      nil   " alt bare")))
+        (setq-local cooked--mode mode
+                    cooked--alt alt
+                    cooked--semantic semantic
+                    cooked--semantic-seen seen
+                    cooked--host nil
+                    cooked--completion-nonce nil
+                    cooked--title nil
+                    cooked--foreground-label nil
+                    cooked--exit nil)
+        (should (eq (cooked--policy) policy))
+        (should (eq (and (cooked--input-state-p) t) owns))
+        (should (equal (substring-no-properties (cooked--mode-line)) indicator))))))
 
 (ert-deftest cooked-a-mark-alone-does-not-buy-the-keyboard ()
   "A `133;B\=' is a claim, and claims cross an ssh as easily as facts do.
@@ -1373,40 +1374,41 @@ completion table ends up offering local paths for a remote filesystem.
 The announcement buys it back, deliberately.  Decay keys on what corroborates
 the claim, not on the transport: a remote host running the full snippet reaches
 the same certainty a local one does, by the same bytes."
-  (with-temp-buffer
-    (setq-local cooked--mode 'raw
-                cooked--alt nil
-                cooked--semantic 'input
-                cooked--semantic-seen t
-                cooked--host nil
-                cooked--completion-nonce nil
-                cooked--title nil
-                cooked--foreground-label nil
-                cooked--exit nil)
-    ;; Local: the child is ours, and nothing about this changes.
-    (should (eq (cooked--policy) 'cooked))
-    (should (cooked--input-state-p))
-    ;; A local session spends no columns saying it is local.
-    (should (equal (substring-no-properties (cooked--mode-line)) " edit"))
-    ;; Behind an ssh, with only the core marks.
-    (setq-local cooked--host "other.example")
-    (should (eq (cooked--policy) 'prompt))
-    (should-not (cooked--input-state-p))
-    (should (cooked--child-owns-keyboard-p))
-    ;; And it says so, both halves: which host, and that the shell has its own
-    ;; line.  This used to read `raw\=', which is what made a remote session
-    ;; look like cooked misbehaving rather than like a shell doing its job.
-    (should (equal (substring-no-properties (cooked--mode-line)) " @other prompt"))
-    ;; And it keeps nothing back, for the reason `command' does not: the shell
-    ;; said where it was, and a shell at its own prompt wants every key.
-    (should (eq (cooked--state-keymap nil 'prompt) cooked-command-map))
-    ;; The same remote host, running the full snippet.
-    (setq-local cooked--completion-nonce "1234")
-    (should (eq (cooked--policy) 'cooked))
-    (should (cooked--input-state-p))
-    ;; The host stays named -- it is still not this machine, and that is what
-    ;; every path in the buffer now means -- but the state word moves.
-    (should (equal (substring-no-properties (cooked--mode-line)) " @other edit"))))
+  (let ((cooked-mode-line-states t))
+    (with-temp-buffer
+      (setq-local cooked--mode 'raw
+                  cooked--alt nil
+                  cooked--semantic 'input
+                  cooked--semantic-seen t
+                  cooked--host nil
+                  cooked--completion-nonce nil
+                  cooked--title nil
+                  cooked--foreground-label nil
+                  cooked--exit nil)
+      ;; Local: the child is ours, and nothing about this changes.
+      (should (eq (cooked--policy) 'cooked))
+      (should (cooked--input-state-p))
+      ;; A local session spends no columns saying it is local.
+      (should (equal (substring-no-properties (cooked--mode-line)) " edit"))
+      ;; Behind an ssh, with only the core marks.
+      (setq-local cooked--host "other.example")
+      (should (eq (cooked--policy) 'prompt))
+      (should-not (cooked--input-state-p))
+      (should (cooked--child-owns-keyboard-p))
+      ;; And it says so, both halves: which host, and that the shell has its own
+      ;; line.  This used to read `raw\=', which is what made a remote session
+      ;; look like cooked misbehaving rather than like a shell doing its job.
+      (should (equal (substring-no-properties (cooked--mode-line)) " @other prompt"))
+      ;; And it keeps nothing back, for the reason `command' does not: the shell
+      ;; said where it was, and a shell at its own prompt wants every key.
+      (should (eq (cooked--state-keymap nil 'prompt) cooked-command-map))
+      ;; The same remote host, running the full snippet.
+      (setq-local cooked--completion-nonce "1234")
+      (should (eq (cooked--policy) 'cooked))
+      (should (cooked--input-state-p))
+      ;; The host stays named -- it is still not this machine, and that is what
+      ;; every path in the buffer now means -- but the state word moves.
+      (should (equal (substring-no-properties (cooked--mode-line)) " @other edit")))))
 
 (ert-deftest cooked-delegation-hands-the-whole-line-to-the-shell ()
   "The line reaches ZLE, the cursor is put back, and Emacs stops owning it.
