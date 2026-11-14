@@ -1767,7 +1767,7 @@ becoming one name that points at the first."
                  most-positive-fixnum)))
     (if (string-empty-p line)
         cooked--imenu-unnamed
-      (concat (truncate-string-to-width line room nil nil t) suffix))))
+      (concat (cooked--fit-width line room) suffix))))
 
 (defun cooked--imenu-index ()
   "An index of the commands this session has run, for `imenu'.

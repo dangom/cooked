@@ -39,6 +39,20 @@
 
 (defvar-local cooked--session nil "Handle returned by `cooked--spawn'.")
 
+(defun cooked--fit-width (string width)
+  "STRING cut to WIDTH columns with an ellipsis, or STRING itself if it fits.
+
+For anything redisplay evaluates -- a mode line, a header line.  On a string
+that already fits, `truncate-string-to-width' finds its end by reading past it
+and catching the `args-out-of-range' that raises.  Caught, that is harmless
+almost everywhere; but the NS port redisplays from inside a drag's tracking
+callback while Emacs is waiting for input, and an error signalled there aborts
+Emacs before any handler is reached.  A short title in the mode line and a file
+dragged over the window was a crash."
+  (if (<= (string-width string) width)
+      string
+    (truncate-string-to-width string width nil nil t)))
+
 (defun cooked-session-p (object)
   "Whether OBJECT is a session handle made by the native core.
 

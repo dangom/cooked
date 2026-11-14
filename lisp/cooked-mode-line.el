@@ -270,7 +270,7 @@ where the program's had been asked for."
          ('frozen (propertize " frozen" 'face 'cooked-peek)))
        (when subject
          (propertize (cooked--mode-line-literal
-                      (format " %s" (truncate-string-to-width subject 24 nil nil t)))
+                      (format " %s" (cooked--fit-width subject 24)))
                      'face 'shadow))
        (when code
          (concat
@@ -356,7 +356,7 @@ literal embedded newline -- a header line is one row, and the later lines of
 a pasted command are not what a passer-by scrolled into its output needs."
   (let* ((first-line (car (split-string input "\n")))
          (label (if (string-search "\n" input) (concat first-line " …") first-line)))
-    (truncate-string-to-width label (max 1 width) nil nil t)))
+    (cooked--fit-width label (max 1 width))))
 
 (defun cooked--sticky-header ()
   "Header line: the command whose output this window is scrolled into.
