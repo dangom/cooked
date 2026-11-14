@@ -17,6 +17,7 @@
 ;;   cooked-tests-next-error.el  next-error over a command's output
 ;;   cooked-tests-sticky-scroll.el       the sticky-scroll header line
 ;;   cooked-tests-command-decorations.el the fringe dot per command
+;;   cooked-tests-annotate.el    clickable notes on stretches of output
 ;;   cooked-tests-menu.el        the menu, and the commands it names
 ;;   cooked-tests-display.el     where a session lands, and the Emacs
 ;;                               subsystems `cooked-mode' answers for
@@ -67,6 +68,7 @@
 (require 'cooked-tests-process)
 (require 'cooked-tests-host)
 (require 'cooked-tests-navigate)
+(require 'cooked-tests-annotate)
 (require 'cooked-tests-bench)
 
 (provide 'cooked-tests)

@@ -275,6 +275,20 @@ rest, outside any cooked buffer at all — see below.
 A fringe marker per command, coloured by exit status — running, succeeded, failed — so
 you can see how a scrollback full of commands went without reading any of it.
 
+** cooked-annotate
+
+A small API for packages that know something about a stretch of output that the terminal
+does not — "this is where the agent ran that command". ~cooked-annotate~ puts a clickable
+mark in the fringe beside those rows (RET on them works too) and keeps it on them through
+repaints and scrolling; ~cooked-annotation-next~ / ~cooked-annotation-previous~ step
+between marks. cooked never decides what to annotate: coterie's tool-call inspector is
+one user.
+
+#+begin_src emacs-lisp
+(cooked-annotate beg end :help "ran: make test" :data call
+                 :action (lambda (annotation) (message "%S" (cooked-annotation-data annotation))))
+#+end_src
+
 ** cooked-project
 
 Scopes a session to the current project root: =cooked-project= reuses one terminal per

@@ -1512,3 +1512,26 @@ about looking elsewhere.
 right — the user stepped out of a program to look, and RET continues. Here the user is in
 the transcript of a conversation, and a RET that submitted whatever was half-typed in the
 prompt would be the worst reading of the key.
+
+## cooked-annotate.el: rows, and the text that was on them
+
+An annotation is a caller's statement about rows of output, so it is anchored by row: a
+marker at the start of its first and of its last row, and an overlay re-derived from those
+after every render (`cooked-row-rendered-functions`), as `cooked-command-decorations` does.
+
+Markers alone are not enough, because rows are rendered in place by screen index. A
+scroll inserts the rows that left the top again above the screen and rewrites every
+screen row with what is now there; the buffer's text is conserved -- a position names the
+same text afterwards (see `cooked--relocate-marks`) -- but a marker on a screen row is
+pushed down by the insertion onto the row that now has its old index, and a marker on a
+row that left the screen collapses to the screen's start when that row is rewritten. So
+each annotation also keeps the position and text of its rows when last seen in place, and
+when a render leaves other text under its markers while that position still holds that
+text, it moves back. Text found at neither was repainted in place, and the annotation
+stays and adopts it. This is checked only for annotations that were on the live screen:
+permanent scrollback is never rewritten.
+
+Emulator-side marks (the OSC 133 mechanism, which survives resizes too) would be the
+stronger anchor; Lisp cannot place one today, and a resize that rewraps annotated rows is
+the case this does not repair.
+
