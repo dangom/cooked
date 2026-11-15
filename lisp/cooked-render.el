@@ -566,28 +566,39 @@ real text off the top."
     ;; that matters, is the one cut off.  Each row given up at the top buys
     ;; that row's height back at the bottom.
     (while (and (< start foot)
-                (> (cooked--rows-height window start foot) body))
+                (> (cooked--rows-height window start foot body) body))
       (setq start (save-excursion (goto-char start)
                                   (vertical-motion 1 window)
                                   (point))))
     start))
 
-(defun cooked--rows-height (window from to)
+(defun cooked--rows-height (window from to &optional limit)
   "The pixels WINDOW takes to show the rows from FROM's through TO's.
 
 `window-text-pixel-size' gets the height of the first row wrong when it starts
 measuring there -- by twelve pixels, under `line-spacing', for a row beside an
 image -- so it is asked from the row above FROM, twice, and the error cancels:
-the rows wanted are the difference between the two."
+the rows wanted are the difference between the two.
+
+With LIMIT, a number of pixels, measuring stops once the rows are known to take
+more than that, and the answer is then only some height above LIMIT.  Every
+caller asking whether rows fit a window wants that and no more -- and without
+it, a window scrolled up into a long history measured all of it, to its end,
+after every command anywhere in the frame: a wheel turning in the buffer beside
+a terminal allocated hundreds of megabytes doing so, and every garbage
+collection that bought was a hitch in the scroll."
   (save-excursion
     (goto-char to)
     (let ((end (line-end-position)))
       (goto-char from)
       (if (zerop (vertical-motion -1 window))
-          (cdr (window-text-pixel-size window from end))
-        (let ((anchor (point)))
-          (- (cdr (window-text-pixel-size window anchor end))
-             (cdr (window-text-pixel-size window anchor (1- from)))))))))
+          (cdr (window-text-pixel-size window from end nil
+                                       (and limit (1+ limit))))
+        (let* ((anchor (point))
+               (above (cdr (window-text-pixel-size window anchor (1- from)))))
+          (- (cdr (window-text-pixel-size window anchor end nil
+                                          (and limit (+ above limit 1))))
+             above))))))
 
 (defun cooked--clamp-overscroll ()
   "Undo a scroll past the bottom of a window that is following the output.

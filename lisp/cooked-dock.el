@@ -46,7 +46,7 @@
 (declare-function cooked--pin-transcript-bottom "cooked-render"
                   (windows &optional pos bottom))
 (declare-function cooked--bottom-start "cooked-render" (window &optional foot))
-(declare-function cooked--rows-height "cooked-render" (window from to))
+(declare-function cooked--rows-height "cooked-render" (window from to &optional limit))
 (defvar cooked--after-scroll-hook)
 
 (defcustom cooked-dock t
@@ -274,11 +274,10 @@ In pixels, from the window's start and its vertical scroll, rather than asked of
 `window-end', which is only as fresh as the last redisplay -- and these
 questions are asked between a command and the redisplay after it."
   (let ((start (window-start window))
-        (foot (cooked-dock--foot)))
+        (foot (cooked-dock--foot))
+        (seen (+ (window-body-height window t) (window-vscroll window t))))
     (or (> start foot)
-        (<= (- (cooked--rows-height window start foot)
-               (window-vscroll window t))
-            (window-body-height window t)))))
+        (<= (cooked--rows-height window start foot seen) seen))))
 
 (defun cooked-dock--reached-p (window)
   "Whether docked WINDOW has been scrolled down into its dock's rows.
@@ -288,13 +287,14 @@ exactly what docking leaves behind, and treating that as arrival would undock
 it on the very next scroll.  One pixel further and the window is showing a live
 row, and the two are put back together where they meet."
   (let ((start (window-start window))
-        (live (cooked-dock--live-top)))
+        (live (cooked-dock--live-top))
+        (seen (+ (window-body-height window t) (window-vscroll window t))))
     (or (>= start live)
-        (< (- (cooked--rows-height window start
-                                   (save-excursion (goto-char live)
-                                                   (line-beginning-position 0)))
-              (window-vscroll window t))
-           (window-body-height window t)))))
+        (< (cooked--rows-height window start
+                                (save-excursion (goto-char live)
+                                                (line-beginning-position 0))
+                                seen)
+           seen))))
 
 ;;;; Following the user
 
