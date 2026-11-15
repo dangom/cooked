@@ -2,7 +2,7 @@
 name = "cooked"
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.100"
 license = "GPL-3.0-or-later"
 description = "Terminal emulator core for Emacs, with termios and OSC 133 awareness"
 
@@ -23,6 +23,15 @@ unicode-width = "0.2"
 # out at the module, where its own contract explains why.
 [lints.rust]
 unreachable_pub = "warn"
+
+# Line tables, not full debug info: a panic or a test failure still names the file and
+# line, and the debug tree is a fraction of the size. Dependencies carry none -- nobody
+# steps through libc -- which is where most of what this saves was.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = 3

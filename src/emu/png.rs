@@ -338,8 +338,8 @@ impl Crc32 {
     /// frame it was decoding.
     fn push(&mut self, data: &[u8]) {
         let mut crc = self.0.unwrap_or(0xFFFF_FFFF);
-        let mut octets = data.chunks_exact(8);
-        for octet in &mut octets {
+        let (octets, tail) = data.as_chunks::<8>();
+        for octet in octets {
             // The running CRC is xored into the low half before the fold, which is where
             // the byte-at-a-time version's `crc ^ byte` went.
             let lo = u32::from_le_bytes([octet[0], octet[1], octet[2], octet[3]]) ^ crc;
@@ -353,7 +353,7 @@ impl Crc32 {
                 ^ CRC32_TABLES[1][((hi >> 16) & 0xFF) as usize]
                 ^ CRC32_TABLES[0][(hi >> 24) as usize];
         }
-        for &byte in octets.remainder() {
+        for &byte in tail {
             crc = (crc >> 8) ^ CRC32_TABLES[0][usize::from((crc as u8) ^ byte)];
         }
         self.0 = Some(crc);

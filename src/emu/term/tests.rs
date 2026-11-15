@@ -2576,7 +2576,9 @@ fn a_run_of_differing_glyphs_packs_one_record_per_distinct_shape() {
     let packed = deco.packed();
     assert_eq!(packed.len(), 12, "three records: {packed:?}");
     let counts: Vec<u16> = packed
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|record| u16::from_le_bytes([record[2], record[3]]))
         .collect();
     assert_eq!(counts, vec![1, 2, 1]);
@@ -2634,7 +2636,9 @@ fn image_placements_still_pack_one_record_per_character() {
     // Every cell names its own column within the picture, which is exactly what a
     // record shared across the run could not do.
     let columns: Vec<u16> = packed
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|record| u16::from_le_bytes([record[6], record[7]]))
         .collect();
     assert_eq!(columns, vec![0, 1, 2]);

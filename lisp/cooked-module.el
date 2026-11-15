@@ -277,7 +277,14 @@ this reason.
 Copied rather than moved.  Leaving cargo\='s artifact where cargo put it is what
 keeps its fingerprint tracking honest, so the next build relinks only when
 something changed.  `make module\=' does exactly this, and the two have to agree:
-fixing one and leaving the other is how a bug like this survives being found."
+fixing one and leaving the other is how a bug like this survives being found.
+
+Except when this build is the first in the tree: an install by a package manager
+rather than a checkout somebody develops in.  Nothing there will ever rebuild
+incrementally -- an update is a new download and a full build -- so cargo\='s
+tree, tens of megabytes of intermediates for one small library, is deleted once
+the library is installed.  A tree that was already there is somebody\='s cache,
+and is left alone."
   (let* ((default-directory root)
          ;; The Makefile spells this `?=', and this is the same bargain: an outer
          ;; CARGO_TARGET_DIR still wins, so a CI cache or a scratch build kept
@@ -289,7 +296,14 @@ fixing one and leaving the other is how a bug like this survives being found."
                                    root))
          (out (expand-file-name (concat "release/libcooked" module-file-suffix)
                                 target))
-         (staging (concat built ".new")))
+         (staging (concat built ".new"))
+         ;; Whether this build is the first anything has made here.  If so, nobody
+         ;; is keeping cargo's tree as a cache to rebuild from -- an install by a
+         ;; package manager, not a checkout someone runs `make' in -- and the tens
+         ;; of megabytes of intermediates in it are only ever wanted for the one
+         ;; file copied out below, so the tree goes once that file is in place.
+         (scratch (and (null (getenv "CARGO_TARGET_DIR"))
+                       (not (file-exists-p target)))))
     (message "cooked: building native core...")
     (unless (zerop (call-process "cargo" nil "*cooked-build*" nil "build"
                                  "--release" "--target-dir" target))
@@ -301,7 +315,9 @@ fixing one and leaving the other is how a bug like this survives being found."
       (error "cooked: cargo built no %s" (file-name-nondirectory out)))
     (make-directory (file-name-directory built) t)
     (copy-file out staging t)
-    (rename-file staging built t)))
+    (rename-file staging built t)
+    (when scratch
+      (delete-directory target t))))
 
 (defun cooked--check-core-drift (built)
   "Say so if BUILT was rebuilt after this session loaded it.

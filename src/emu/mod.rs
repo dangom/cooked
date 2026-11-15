@@ -24,12 +24,11 @@
 /// a deliberate search for a collision — so it can be, and now is, a plain fast hash
 /// rather than a cryptographic one.
 pub(crate) fn fast_hash(bytes: &[u8]) -> u64 {
-    let mut chunks = bytes.chunks_exact(8);
+    let (chunks, tail) = bytes.as_chunks::<8>();
     let mut hash = 0u64;
-    for chunk in &mut chunks {
-        hash = mix(hash, u64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in chunks {
+        hash = mix(hash, u64::from_le_bytes(*chunk));
     }
-    let tail = chunks.remainder();
     if !tail.is_empty() {
         let mut word = [0u8; 8];
         word[..tail.len()].copy_from_slice(tail);
@@ -87,13 +86,12 @@ pub(crate) fn content_hash(bytes: &[u8]) -> u128 {
     const SEED_B: u64 = 0x9e37_79b9_7f4a_7c15;
     let mix_b = |hash: u64, word: u64| (hash.rotate_left(27) ^ word).wrapping_mul(SEED_B);
     let (mut a, mut b) = (0u64, SEED_B);
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in &mut chunks {
-        let word = u64::from_le_bytes(chunk.try_into().unwrap());
+    let (chunks, tail) = bytes.as_chunks::<8>();
+    for chunk in chunks {
+        let word = u64::from_le_bytes(*chunk);
         a = mix(a, word);
         b = mix_b(b, word);
     }
-    let tail = chunks.remainder();
     if !tail.is_empty() {
         let mut word = [0u8; 8];
         word[..tail.len()].copy_from_slice(tail);

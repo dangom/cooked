@@ -108,12 +108,15 @@ cooked is the pick.
 
 * Installing
 
-You need *Emacs 29.1+* built with dynamic module support, and a *Rust toolchain*
-(1.85+, for edition 2024). Linux and macOS.
+You need *Emacs 29.1+* built with dynamic module support, and a current stable *Rust
+toolchain* (1.100+; =rustup update stable= gets it). Linux and macOS.
 
 The native core is built with =cargo= on first use and rebuilt whenever the Rust sources
 are newer than the artifact, so there's no separate build step to remember. The first
-=M-x cooked= after installing will take a minute and say so.
+=M-x cooked= after installing will take a minute and say so. A first build in a fresh
+install leaves only the library behind: cargo's own build tree is deleted once the
+library is in place. A checkout you build in yourself keeps it, as a cache for the next
+build.
 
 #+begin_src emacs-lisp
 ;; straight.el

@@ -1,0 +1,6 @@
+# Every cargo command builds in target/cargo, the directory the Makefile and the
+# Lisp build already use: a bare `cargo test' or `cargo clippy' otherwise writes a
+# second tree into target/ beside it.  target/release is not cargo's -- it holds the
+# two installed files `make module' and `cooked--build-module' copy there.
+[build]
+target-dir = "target/cargo"

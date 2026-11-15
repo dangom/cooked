@@ -1241,10 +1241,10 @@ impl Screen {
 
         // The cursor is free to sit past the end of its line's text — on a blank row, or in
         // the gap a `goto` left. Chunking has to produce a row for wherever it is.
-        if let Some(line) = lines.get_mut(cursor_line) {
-            if line.cells.len() < cursor_offset {
-                line.cells.resize(cursor_offset, Cell::default());
-            }
+        if let Some(line) = lines.get_mut(cursor_line)
+            && line.cells.len() < cursor_offset
+        {
+            line.cells.resize(cursor_offset, Cell::default());
         }
 
         // Re-align the seam. The head occupies whole visual rows at the old width but
@@ -1252,7 +1252,7 @@ impl Screen {
         // buffer rather than the grid: left here they would start row 0 partway along a
         // visual row, putting every hard break below it in the wrong column.
         let mut history = Vec::new();
-        if head % cols != 0 && !lines.is_empty() {
+        if !head.is_multiple_of(cols) && !lines.is_empty() {
             let split = (cols - head % cols).min(lines[0].cells.len());
             let ends_here = split == lines[0].cells.len();
             history.push(Departed::from_row(&lines[0].take_front(split, !ends_here)));
