@@ -1496,7 +1496,7 @@ moves -- with the history as Emacs text. Three shapes were weighed:
   the header line is at the top. An overlay's `after-string` at `window-end` has to be
   moved on every scroll, changes `window-end` by being there, and is not editable text.
 - **Two windows, always.** Simplest to reason about, but it changes the user's layout
-  permanently -- coterie's "terminals only" check, `persp-mode`, `desktop` all see a
+  permanently -- anything that inspects the layout, `persp-mode`, `desktop` all see a
   second window per agent -- and a following window gains nothing from it.
 - **Two windows, while reading.** What was built. A window that follows needs no dock; the
   moment one stops showing the bottom row, its live rows are split off below it. Taken

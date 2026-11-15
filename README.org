@@ -261,8 +261,8 @@ of from Emacs' own completion table — so =git checkout <TAB>= offers branches 
 Turns file names that appear in a command's output into clickable links, the way
 =compilation-mode= does for error output.  How a followed file opens is
 ~cooked-file-link-display~, or, in a buffer that sets it, ~cooked-file-open-function~ --
-which is how a package that owns some cooked buffers can open their files its own way
-(coterie previews an agent's in a pop-up) while every other terminal keeps the default.
+which is how a package that owns some cooked buffers can open their files its own way --
+in a pop-up, say -- while every other terminal keeps the default.
 
 ** cooked-next-error
 
@@ -284,8 +284,8 @@ A small API for packages that know something about a stretch of output that the 
 does not — "this is where the agent ran that command". ~cooked-annotate~ puts a clickable
 mark in the fringe beside those rows (RET on them works too) and keeps it on them through
 repaints and scrolling; ~cooked-annotation-next~ / ~cooked-annotation-previous~ step
-between marks. cooked never decides what to annotate: coterie's tool-call inspector is
-one user.
+between marks. cooked never decides what to annotate: that is up to the package
+marking the rows, such as an inspector of an agent's tool calls.
 
 #+begin_src emacs-lisp
 (cooked-annotate beg end :help "ran: make test" :data call
