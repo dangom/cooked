@@ -976,9 +976,14 @@ usage: cooked-host new NAME [--dir DIR] [--rows N] [--cols N] [--ring BYTES] [--
        cooked-host send [--paste] NAME   (what to type is read from standard input)
        cooked-host capture NAME       (the text on its screen)
        cooked-host kill NAME
+       cooked-host run [--label TEXT] [--key TEXT] -- PROGRAM [ARG...]
+                                      (in a session: a command whose output is kept
+                                       under $COOKED_RUN_DIR for the terminal to follow)
 
 Keeps a program running on a terminal of its own, for cooked to attach to from Emacs.
-Sessions live in $COOKED_HOST_DIR, by default ~/.local/state/cooked/hosts.";
+Sessions live in $COOKED_HOST_DIR, by default ~/.local/state/cooked/hosts.
+The program is told its session's name in $COOKED_HOST_SESSION, and where this
+program is in $COOKED_HOST.";
 
 /// The environment a child started from a plain shell is given: this process's own,
 /// and on top of it what Emacs would have said about the terminal. One started from
@@ -1108,7 +1113,23 @@ fn new(mut args: impl Iterator<Item = String>) -> std::result::Result<(), String
         Some(dir) => Some(dir),
         None => std::env::current_dir().ok(),
     };
-    let env = environment();
+    let mut env = environment();
+    // Which session this is, for a program in it that has something to say about
+    // itself to something outside -- a record to file under the name a terminal
+    // attached here would look it up by. Over any value inherited: a host started
+    // from inside a session is not that session.
+    env.retain(|(k, _)| k != "COOKED_HOST_SESSION");
+    env.push(("COOKED_HOST_SESSION".to_owned(), name.clone()));
+    // And where this program is, for one that would run its commands through `run`:
+    // it is not on anybody's PATH. Left alone where something has already said.
+    if !env.iter().any(|(k, v)| k == "COOKED_HOST" && !v.is_empty())
+        && let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.into_os_string().into_string().ok())
+    {
+        env.retain(|(k, _)| k != "COOKED_HOST");
+        env.push(("COOKED_HOST".to_owned(), exe));
+    }
     let hosts = directory();
     let mut ready = daemonize().map_err(|e| e.to_string())?;
     let spec = Spec {
@@ -1144,6 +1165,9 @@ pub fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let dir = directory();
     let done = match args.next().as_deref() {
+        // A command of a program in a session, not a session: see `crate::run`. Its
+        // exit status is the command's, so it does not come back here.
+        Some("run") => return crate::run::main(args),
         Some("new") => new(args),
         Some("list") => match args.next().as_deref() {
             None => {

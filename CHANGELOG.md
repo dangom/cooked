@@ -39,6 +39,22 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   underneath, so a reply can be typed while the history is read. Scrolling back
   down, moving onto the live rows or submitting with `RET` joins them again.
   See `cooked-dock`, `cooked-dock-context-rows` and `cooked-dock-max-fraction`.
+- A hosted program is told its session's name in `COOKED_HOST_SESSION` and
+  where the host program is in `COOKED_HOST`, and `cooked-host-attach-hook`
+  runs in a buffer attached to a session.
+- Runs: `cooked-host run -- COMMAND` runs a command of a program in a hosted
+  session unchanged and also keeps what it prints, as it comes, under the
+  session's name. `cooked-run` follows one from Emacs in a buffer that grows
+  with it (`cooked-run-latest`, `cooked-run-select`, `cooked-runs`,
+  `cooked-run-buffer`).
+- `cooked-popup`: a look at a buffer or a file in a child frame over the current
+  one, without touching the windows underneath. `cooked-popup-file` shows a file
+  read-only in its own major mode, without running mode hooks or reading local
+  variables; `cooked-popup-open-file` does so for file names in a terminal's
+  output, as a `cooked-file-open-function`. `cooked-popup-buffer` shows a
+  package's own buffer, with `cooked-popup-mode` for its keys (`q` close, `l`
+  back, `v` open in a window). The frame grows with what it shows but its top
+  stays put (`cooked-popup-top`, `cooked-popup-bottom`).
 - `cooked-close` (`C-c C-k`) hangs up on the program, ends the session and
   closes the buffer; `cooked-close-grace` sets how long it waits.
 - `cooked-annotate`: packages can attach clickable notes to stretches of

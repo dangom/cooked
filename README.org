@@ -327,6 +327,52 @@ Two more seams of the same kind: ~cooked-prompt-positions-functions~ names extra
 nothing about), and ~cooked-paste-string~ pastes text at the program's input the way
 =cooked-paste= pastes a kill — bracketed, its controls removed, not submitted.
 
+** cooked-popup
+
+A look at a buffer or a file in a small frame over the current one, which takes the
+keyboard while it is up and gives it back on =q=. No window is split or resized for it, so
+a terminal underneath keeps its size and its program is never told to redraw.
+
+~cooked-popup-file~ shows a file read-only, at a line, in the major mode it would be visited
+in — highlighted as it would be there, an image as an image — in a buffer that does not
+visit it: no mode hook runs and no local variables are read, so a look starts no language
+server and runs nothing the file says. =v= opens the real thing in a window. To have
+file names in a terminal's output open this way:
+
+#+begin_src emacs-lisp
+(require 'cooked-popup)
+(setq-default cooked-file-open-function #'cooked-popup-open-file)
+#+end_src
+
+~cooked-popup-buffer~ is the same frame for a buffer of a package's own, with
+~cooked-popup-mode~ for its keys and ~cooked-popup-visit-function~ for what =v= opens. A
+pop-up opened from inside one replaces it, and =l= goes back. See ~cooked-popup-width~,
+~cooked-popup-top~, ~cooked-popup-bottom~ and ~cooked-popup-max-file-size~.
+
+** cooked-run
+
+Some programs run commands whose output never reaches the terminal: they read it through
+a pipe and show a summary, or nothing until the command is done. If such a program runs
+its commands through =cooked-host run= in a hosted session, each becomes a /run/: the
+command runs exactly as it would have (same parent, input, environment, directory and
+exit status) and what it prints is also kept, as it comes, in a file under the session's
+name.
+
+#+begin_src sh
+cooked-host run --label "make test" -- sh -c 'make test'
+#+end_src
+
+~cooked-run-latest~ follows the newest run of the current buffer's session in a buffer
+that grows as the command prints, with its colours; ~cooked-run-select~ chooses one. There
+=k= interrupts the command and =g= looks again at once. From Lisp, ~cooked-runs~ lists a
+session's runs and ~cooked-run-buffer~ gives the buffer following one.
+
+Outside a hosted session, or where the run cannot be kept (a sandbox that denies the
+directory), =cooked-host run= simply becomes the command: it is never the reason one
+fails. Runs live under =~/.local/state/cooked/runs= (or ~$COOKED_RUN_DIR~), readable by
+you only; a session keeps its newest 200. What a command prints is shown as text and
+never obeyed: colours become faces, and every other control sequence is dropped.
+
 ** cooked-project
 
 Scopes a session to the current project root: =cooked-project= reuses one terminal per
@@ -547,6 +593,7 @@ cooked-host list --brief                                  # NAME STATE, one to a
 cooked-host capture build-1                               # the screen, as text
 echo 'please stop' | cooked-host send --paste build-1     # typed; bracketed if asked for
 cooked-host kill build-1
+cooked-host run -- make test                              # in a session: output kept
 #+end_src
 
 With ~desktop-save-mode~, hosted buffers are saved by name and come back attached.
@@ -564,7 +611,11 @@ cooked-host kill build
 #+end_src
 
 Sessions live under =~/.local/state/cooked/hosts= (or ~$COOKED_HOST_DIR~), in a
-directory only you can enter: the socket there is the keyboard of a shell.
+directory only you can enter: the socket there is the keyboard of a shell. The program
+is told its session's name in ~$COOKED_HOST_SESSION~, and ~cooked-host-attach-hook~ runs
+in a buffer attached to one, with the same name in ~cooked-host-name~ — which is how a
+package finds the buffer for something a program filed under its session's name. It is
+also told where =cooked-host= itself is, in ~$COOKED_HOST~.
 
 * Compile integration
 

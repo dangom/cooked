@@ -85,6 +85,14 @@ Nil leaves it to the program: `$COOKED_HOST_DIR', or failing that
 `cooked/hosts' under `$XDG_STATE_HOME' or `~/.local/state'."
   :type '(choice (const :tag "The program's default" nil) directory))
 
+(defvar cooked-host-attach-hook nil
+  "Run in a buffer once it is attached to a hosted session.
+With `cooked-host-name' set, and again each time the buffer attaches: after a
+host hung up on it, or when it is brought back with a saved session of Emacs.
+The program in the session has the same name in its environment, as
+COOKED_HOST_SESSION, so this is where a package that keeps something per
+session -- filed under that name by the program -- finds the buffer for it.")
+
 (defvar-local cooked-host-name nil
   "The name of the hosted session this buffer is attached to, or nil.")
 
@@ -253,7 +261,8 @@ size, and being told that it has is enough."
       ;; is set again from the variable whenever the keyboard changes hands.
       (setq-local cooked-confirm-kill nil)
       (setq-local desktop-save-buffer #'cooked-host--desktop-save)
-      (cooked--refresh-keymap))
+      (cooked--refresh-keymap)
+      (run-hooks 'cooked-host-attach-hook))
     buffer))
 
 (defun cooked-host--read (prompt)

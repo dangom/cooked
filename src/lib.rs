@@ -9,6 +9,7 @@ pub(crate) mod error;
 pub mod host;
 pub(crate) mod platform;
 pub(crate) mod pty;
+pub mod run;
 pub(crate) mod session;
 
 use emu::{

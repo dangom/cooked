@@ -49,6 +49,21 @@ Every session left in it is ended afterwards."
   '("/bin/sh" "-c" "echo first; while read line; do echo \"got $line\"; done")
   "A child that says something, then answers each line it is given.")
 
+(ert-deftest cooked-host-a-session-is-told-its-name-and-so-is-its-buffer ()
+  "The child has its session's name in COOKED_HOST_SESSION, and
+`cooked-host-attach-hook' runs in the buffer with the same name set."
+  (cooked-tests-host--with-directory
+    (let* ((seen nil)
+           (cooked-host-attach-hook (list (lambda () (push cooked-host-name seen))))
+           (process-environment (cons "COOKED_HOST_SESSION=outer" process-environment))
+           (buffer (cooked-host-exec (generate-new-buffer "*cooked-host-test*") "named"
+                                     "/bin/sh"
+                                     '("-c" "echo \"I am $COOKED_HOST_SESSION.\"; read line"))))
+      (with-current-buffer buffer
+        (should (cooked-tests--settle
+                 (lambda () (string-match-p "I am named\\." (cooked-tests--text)))))
+        (should (equal seen '("named")))))))
+
 (ert-deftest cooked-host-a-session-outlives-its-buffer-and-replays ()
   "The whole point, end to end: killing the buffer ends nothing, and a buffer
 attached later is built from what the child wrote before it existed."
