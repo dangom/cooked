@@ -359,14 +359,21 @@ would abort the rest of the redisplay."
 
 (defconst cooked--source-directory
   (file-name-directory
-   (file-truename (or load-file-name buffer-file-name default-directory)))
-  "Directory holding this file, captured at load time.
+   (file-truename (or (locate-library "cooked-util.el" t)
+                      load-file-name buffer-file-name default-directory)))
+  "Directory holding this file's source, captured at load time.
 
 Through `file-truename\=' on the file rather than on the directory, because the
 package managers symlink the .el files individually into a build directory that
 is itself a real directory -- so resolving the directory answers with the build
 tree, and only resolving the file lands in the clone.  `cooked--root\=' needs the
-clone: that is where Cargo.toml, terminfo/ and shell-integration/ are.")
+clone: that is where Cargo.toml, terminfo/ and shell-integration/ are.
+
+The source, found on `load-path\=', and not the file being loaded: what is
+loaded is the compiled file, and straight and elpaca write that into the build
+directory as a real file beside the links -- so resolving it stayed in the build
+tree, and every install they compiled looked there for a crate that is not
+there.")
 
 (defun cooked--root ()
   "Top of the source tree: the directory holding Cargo.toml.

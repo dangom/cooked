@@ -148,9 +148,11 @@ shell appends to the same vocabulary it received."
     (and on (mapconcat #'symbol-name on " "))))
 
 (defun cooked--integration-directory ()
-  "Directory holding the shell integration snippets."
-  (expand-file-name "shell-integration"
-                    (file-name-directory (directory-file-name cooked--source-directory))))
+  "Directory holding the shell integration snippets.
+In the source tree, found by `cooked--root\=' like everything else there: the
+parent of the directory the Lisp was loaded from is only the tree when that
+directory is lisp/, and not when it is a package manager\='s build directory."
+  (expand-file-name "shell-integration" (cooked--root)))
 
 (defvar-local cooked--scratch nil
   "Directory of generated shell startup files, deleted with the buffer.")
