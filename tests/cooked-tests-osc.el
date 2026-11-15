@@ -83,9 +83,112 @@
       (push (float-time) cooked--notification-times)
       (should-not (cooked--notification-allowed-p)))))
 
-(ert-deftest cooked-notification-strips-control-characters ()
-  (should (equal (cooked--notification-clean "a\e]0;evil\007b" 100) "a]0;evilb"))
-  (should (equal (cooked--notification-clean "abcdef" 3) "abc")))
+(ert-deftest cooked-child-text-strips-what-could-act-on-the-display ()
+  "C0, DEL, C1 and the bidi overrides go; everything printable stays."
+  (should (equal (cooked--child-text "a\e]0;evil\007b" 100) "a]0;evilb"))
+  (should (equal (cooked--child-text "abcdef" 3) "abc"))
+  (should (equal (cooked--child-text "x\177y\u009bz" 100) "xyz"))
+  ;; A right-to-left override would display "Opus" as something it does not say.
+  (should (equal (cooked--child-text "‮Opus⁦⁩" 100) "Opus"))
+  (should (equal (cooked--child-text "été ✳" 100) "été ✳"))
+  (should (equal (cooked--child-text nil 10) "")))
+
+(defun cooked-tests--set-user-var (name value)
+  "Feed `cooked--osc-iterm' a SetUserVar for NAME with VALUE, as a child would."
+  (cooked--osc-iterm
+   (list (format "SetUserVar=%s=%s" name
+                 (base64-encode-string (encode-coding-string value 'utf-8) t)))))
+
+(defmacro cooked-tests--with-user-vars (&rest body)
+  "Run BODY in a sessionless buffer ready to take user variables."
+  (declare (indent 0))
+  `(with-temp-buffer
+     (setq-local cooked--mode 'raw cooked--alt nil cooked--semantic nil
+                 cooked--semantic-seen nil cooked--host nil
+                 cooked--completion-nonce nil cooked--exit nil cooked--title nil
+                 cooked--foreground-label nil cooked--session nil)
+     (let ((cooked-mode-line-states nil)
+           (cooked-mode-line-user-vars '("model")))
+       ,@body)))
+
+(ert-deftest cooked-user-var-reaches-the-mode-line ()
+  "A program's SetUserVar shows its value; an empty one takes it away again."
+  (cooked-tests--with-user-vars
+    (cooked-tests--set-user-var "model" "Opus 4.6")
+    (should (equal (substring-no-properties (cooked--mode-line)) " Opus 4.6"))
+    ;; Only the names asked for, in the order asked for.
+    (cooked-tests--set-user-var "branch" "main")
+    (should (equal (substring-no-properties (cooked--mode-line)) " Opus 4.6"))
+    (let ((cooked-mode-line-user-vars '("branch" "model")))
+      (should (equal (substring-no-properties (cooked--mode-line)) " main Opus 4.6")))
+    ;; Text the child chose: a `%' is shown, not read as a mode-line construct.
+    ;; (Asserted escaped: `format-mode-line' has no frame to work with in batch.)
+    (cooked-tests--set-user-var "model" "50% %b")
+    (should (equal (substring-no-properties (cooked--mode-line)) " 50%% %%b"))
+    (cooked-tests--set-user-var "model" "")
+    (should (equal (substring-no-properties (cooked--mode-line)) ""))
+    (should-not (assoc "model" cooked--user-vars))))
+
+(ert-deftest cooked-user-var-refuses-what-it-cannot-read ()
+  "Malformed, oversized, or hostile payloads leave nothing behind."
+  (cooked-tests--with-user-vars
+    (dolist (payload `("SetUserVar=model"          ; no value at all
+                       "SetUserVar=model=***"      ; not base64
+                       "SetUserVar=mo del=T3B1cw==" ; not a name
+                       "SetUserVar==T3B1cw=="      ; no name
+                       "CurrentDir=/tmp"           ; somebody else's verb
+                       ,(concat "SetUserVar=model="
+                                (make-string (1+ (cddr cooked--user-var-limits)) ?A))))
+      (cooked--osc-iterm (list payload)))
+    (should-not cooked--user-vars)
+    ;; Controls are stripped and the width capped, on the way in.
+    (cooked-tests--set-user-var "model" (concat "\e[31mOpus\a" (make-string 200 ?x)))
+    (let ((value (cadr (assoc "model" cooked--user-vars))))
+      (should (string-prefix-p "[31mOpus" value))
+      (should (= (string-width value) (cadr cooked--user-var-limits))))
+    ;; And a child cannot grow the table without bound.
+    (dotimes (i 100) (cooked-tests--set-user-var (format "v%d" i) "x"))
+    (should (= (length cooked--user-vars) (car cooked--user-var-limits)))))
+
+(ert-deftest cooked-user-var-belongs-to-the-program-that-set-it ()
+  "A variable set by one foreground group is not shown once another is in front.
+
+What retires `model' when the agent exits to the shell.  The comparison is
+against the cached group, so this is also the mode line asking the OS nothing."
+  (cooked-tests--with-user-vars
+    (cl-letf (((symbol-function 'cooked--update-foreground-label)
+               (lambda () (setq cooked--foreground-group 100))))
+      (cooked-tests--set-user-var "model" "Opus"))
+    (should (equal (substring-no-properties (cooked--mode-line)) " Opus"))
+    (setq cooked--foreground-group 42)
+    (should (equal (substring-no-properties (cooked--mode-line)) ""))
+    ;; And the next program's first variable clears the last one's out.
+    (cl-letf (((symbol-function 'cooked--update-foreground-label)
+               (lambda () (setq cooked--foreground-group 42))))
+      (cooked-tests--set-user-var "other" "x"))
+    (should (equal (mapcar #'car cooked--user-vars) '("other")))))
+
+(ert-deftest cooked-user-var-arrives-from-a-live-child ()
+  "End to end: the escape from a child's output, to the handler, to the mode line."
+  (cooked-tests--with-session
+      '("/bin/sh" "-c" "printf '\\033]1337;SetUserVar=model=T3B1cyA0LjY=\\007'; sleep 5")
+    (should (cooked-tests--settle
+             (lambda () (string-search "Opus 4.6" (cooked--mode-line)))))))
+
+(ert-deftest cooked-user-var-goes-away-with-its-program ()
+  "A job's variable is shown while it runs and gone at the next prompt."
+  (skip-unless (executable-find "zsh"))
+  (cooked-tests--with-zsh
+    (goto-char cooked--input-end)
+    ;; One external job, not zsh's builtin `printf': a builtin runs in the shell's
+    ;; own group, which is still in front at the next prompt.
+    (insert "sh -c 'printf \"\\033]1337;SetUserVar=model=T3B1cw==\\007\"; sleep 3'")
+    (cooked-send-input)
+    (should (cooked-tests--settle
+             (lambda () (string-search "Opus" (cooked--mode-line)))))
+    (should (cooked-tests--settle
+             (lambda () (not (string-search "Opus" (cooked--mode-line))))
+             10))))
 
 (ert-deftest cooked-notification-chunks-are-bounded ()
   (with-temp-buffer

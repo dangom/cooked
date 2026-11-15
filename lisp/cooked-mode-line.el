@@ -16,11 +16,14 @@
 (require 'cooked)
 (require 'cooked-command)
 
-;; Owned by the layer that requires this file: `cooked--foreground-label' by
-;; cooked-keys.el, the rest by cooked-mode.el.  A label the foreground program
-;; supplies, a record of who last held the keyboard, and the command the state
-;; segment is a click away from.
+;; Owned by the layer that requires this file: `cooked--foreground-label' and
+;; `cooked--foreground-group' by cooked-keys.el, `cooked--user-vars' by
+;; cooked-osc.el, the rest by cooked-mode.el.  A label the foreground program
+;; supplies, the variables it set about itself, a record of who last held the
+;; keyboard, and the command the state segment is a click away from.
 (defvar cooked--foreground-label)
+(defvar cooked--foreground-group)
+(defvar cooked--user-vars)
 (defvar cooked--ownership)
 (declare-function cooked-toggle-peek "cooked-mode")
 (declare-function cooked--buffer-name-shows-title-p "cooked-mode")
@@ -222,6 +225,30 @@ such as \"~/src\" is never touched."
        "\\`\\(?:[^[:ascii:][:alnum:]]\\|[[:space:]]\\)+" "" title t t)
     title))
 
+(defcustom cooked-mode-line-user-vars '("model")
+  "Which variables the foreground program set about itself the mode line shows.
+
+A list of names, in the order they are shown.  A program sets one with iTerm2\='s
+`OSC 1337 ; SetUserVar=NAME=BASE64\=' -- WezTerm reads the same sequence -- and
+it is shown only while that program is still in the foreground, so it goes
+away when the program exits.  The default names `model\=', which an agent\='s
+status-line script can publish; see the README for Claude Code\='s.  nil shows
+none."
+  :type '(repeat (string :tag "Variable name"))
+  :group 'cooked)
+
+(defun cooked--mode-line-user-vars ()
+  "The values of `cooked-mode-line-user-vars\=' that are still current, in order.
+
+Current means set by the process group still in the foreground, compared
+against `cooked--foreground-group\=' -- a buffer-local, so this asks the OS
+nothing; see `cooked-mode-line-asks-the-os-nothing\='."
+  (let (values)
+    (dolist (name cooked-mode-line-user-vars (nreverse values))
+      (when-let* ((entry (assoc name cooked--user-vars))
+                  ((eql (cddr entry) cooked--foreground-group)))
+        (push (cadr entry) values)))))
+
 (defun cooked--mode-line-literal (string)
   "STRING as the mode line will show it verbatim.
 
@@ -272,6 +299,14 @@ where the program's had been asked for."
          (propertize (cooked--mode-line-literal
                       (format " %s" (cooked--fit-width subject 24)))
                      'face 'shadow))
+       ;; After the subject, which says what is running; these are what it said
+       ;; about itself.  Already cleaned and capped on the way in.
+       (mapconcat (lambda (value)
+                    (concat " " (propertize
+                                 (cooked--mode-line-literal value)
+                                 'face 'shadow
+                                 'help-echo "cooked: set by the program itself")))
+                  (cooked--mode-line-user-vars) "")
        (when code
          (concat
           " "

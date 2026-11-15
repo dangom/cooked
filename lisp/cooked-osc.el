@@ -5,17 +5,19 @@
 ;; Almost every OSC is passed through verbatim by the native core, so teaching cooked a
 ;; new sequence is Lisp rather than Rust -- an entry in `cooked-osc-handlers\='.
 ;;
-;; Two are excepted, and for the same reason: they are already the core\='s own business,
-;; so a handler here could only be a second opinion about state Rust already holds.  OSC
-;; 133 decides who owns the keyboard.  OSC 8 is grid state -- a link id is carried per
-;; cell and arrives as the drain\='s `:links\=', which `cooked-link.el\=' installs -- and
-;; `State::osc\=' in src/emu/term/osc.rs returns before raising an event for either.
+;; The exceptions are the ones already the core\='s own business, so that a handler here
+;; could only be a second opinion about state Rust already holds.  OSC 133 decides who
+;; owns the keyboard.  OSC 8 is grid state -- a link id is carried per cell and arrives
+;; as the drain\='s `:links\=', which `cooked-link.el\=' installs.  OSC 66 writes text to
+;; the grid, and OSC 1337\='s `File=\=' puts an image on it.  `State::osc\=' in
+;; src/emu/term/osc.rs returns before raising an event for any of them; the rest of
+;; 1337 comes here.
 ;;
 ;; The division the core draws: it interprets what changes *the terminal* -- the
 ;; alternate screen, mouse and paste modes, device replies -- and nothing else.  What a
 ;; sequence means to Emacs is Emacs\=' business, and that is this file: titles, the
-;; working directory, the default colours, notifications, the clipboard, and the OSC 51
-;; channel\='s two nil-valued hooks.
+;; working directory, the default colours, notifications, the clipboard, the variables
+;; a program sets about itself, and the OSC 51 channel\='s two nil-valued hooks.
 ;;
 ;; Two of these are refused by default and say so in their own docstrings, for the same
 ;; reason: anything that can write to the terminal can send one.  See
@@ -32,11 +34,14 @@
 (declare-function cooked--set-color-scheme "ext:cooked-core")
 (declare-function cooked--update-buffer-name "cooked-mode")
 (declare-function cooked--defer "cooked-mode")
+(declare-function cooked--update-foreground-label "cooked-keys")
+(defvar cooked--foreground-group)
 
 ;;;; OSC dispatch
 ;;
-;; Everything except OSC 133 arrives here verbatim, so a new integration is a
-;; handler in this alist rather than a change to the native core.
+;; Everything the core does not keep for itself -- see the commentary -- arrives
+;; here verbatim, so a new integration is a handler in this alist rather than a
+;; change to the native core.
 
 (defvar cooked-osc-handlers
   '((0 . cooked--osc-title)
@@ -51,7 +56,8 @@
     (51 . cooked--osc-emacs)
     (52 . cooked--osc-clipboard)
     (99 . cooked--osc-notify)
-    (777 . cooked--osc-notify-777))
+    (777 . cooked--osc-notify-777)
+    (1337 . cooked--osc-iterm))
   "Alist of OSC code to a function taking the remaining payload parts.
 Add to this to teach cooked a new escape sequence without touching Rust.
 
@@ -90,6 +96,28 @@ hypothetical -- `cooked--osc-emacs' can reach `find-file', which
         (let ((cooked--osc-bell-terminated bell)
               (cooked--osc-code code))
           (funcall handler parts))))))
+
+(defconst cooked--child-text-unsafe
+  (rx (any (0 . 31) (127 . 159)
+           #x200e #x200f (#x202a . #x202e) (#x2066 . #x2069)))
+  "Characters that text a child chose must not carry into Emacs\=' own display.
+
+C0, DEL and C1 controls, and the bidirectional overrides and isolates.  The
+first set can move, colour or end what it is printed in; the second reorders
+the text around it, which in a mode line or a notification lets a string
+display as something other than what it says.  `[:cntrl:]\=' alone is C0, and
+misses the rest.")
+
+(defun cooked--child-text (text limit)
+  "TEXT a child sent, safe to show: see `cooked--child-text-unsafe\='.
+Truncated to LIMIT columns.  nil reads as the empty string.
+
+The one cleaning every handler that displays a child\='s words goes through,
+so that a notification and a mode-line variable cannot disagree about what is
+safe to print."
+  (truncate-string-to-width
+   (replace-regexp-in-string cooked--child-text-unsafe "" (or text "") t t)
+   limit))
 
 (defun cooked--osc-title (parts)
   "Show the child's title, from the OSC 0 or 2 payload PARTS."
@@ -161,7 +189,7 @@ sends one when a long build finishes; a child that does not sends thousands."
   :group 'cooked)
 
 (defconst cooked--notification-limits '(120 . 500)
-  "Maximum title and body length, in characters.")
+  "Maximum title and body length, in columns.")
 
 (defvar-local cooked--notification-times nil
   "Timestamps of recent notifications, newest first.
@@ -177,12 +205,6 @@ A child can open a chunked notification and never close it, so both are
 bounded: without that, `cooked--notification-chunks\=' is a buffer-local leak the
 child controls.")
 
-(defun cooked--notification-clean (text limit)
-  "TEXT with control characters removed, truncated to LIMIT characters."
-  (truncate-string-to-width
-   (replace-regexp-in-string "[[:cntrl:]]" "" (or text ""))
-   limit))
-
 (defun cooked--notification-allowed-p ()
   "Whether another notification is within `cooked-notification-rate\='."
   (pcase-let* ((`(,count . ,seconds) cooked-notification-rate)
@@ -197,10 +219,8 @@ child controls.")
   "Raise a desktop notification with TITLE and BODY, subject to the rate limit."
   (when (cooked--notification-allowed-p)
     (push (float-time) cooked--notification-times)
-    (let ((title (cooked--notification-clean
-                  title (car cooked--notification-limits)))
-          (body (cooked--notification-clean
-                 body (cdr cooked--notification-limits))))
+    (let ((title (cooked--child-text title (car cooked--notification-limits)))
+          (body (cooked--child-text body (cdr cooked--notification-limits))))
       ;; `notifications-notify\=' needs D-Bus, which a terminal Emacs may not have.
       (if (and (fboundp 'notifications-notify) (featurep 'dbusbind))
           (notifications-notify :title (if (string-empty-p title) "cooked" title)
@@ -253,6 +273,73 @@ the payload is its title or its body, and `d=0\=' means more chunks follow."
   (when (equal (car parts) "notify")
     (when cooked-allow-notifications
       (cooked--notify (nth 1 parts) (string-join (nthcdr 2 parts) ";")))))
+
+;;;; OSC 1337 SetUserVar -- what a program says about itself
+;;
+;; iTerm2's `ESC ] 1337 ; SetUserVar=NAME=BASE64 ST', which WezTerm also reads: a
+;; program publishing a name/value pair to its terminal.  It is how a program says
+;; something about itself that nothing on screen states -- which model an agent is
+;; running is the case that brought it here -- and `cooked-mode-line-user-vars'
+;; chooses which of them the mode line shows.
+;;
+;; Nothing acts on a value.  It is displayed and nothing else, after the cleaning
+;; every displayed child string gets, so the worst a hostile stream can do with
+;; this is put a short word in the mode line -- the same reach a title has.
+
+(defconst cooked--user-var-limits '(16 64 . 1024)
+  "Bounds on user variables: (COUNT WIDTH . ENCODED).
+
+How many one buffer holds, how many columns a value keeps, and the longest
+base64 payload decoded at all.  A child can set as many names as it likes, so
+the count is what keeps `cooked--user-vars\=' from being a leak it controls.")
+
+(defvar-local cooked--user-vars nil
+  "Variables the child set with OSC 1337 SetUserVar, newest first.
+
+Each entry is (NAME VALUE . OWNER).  OWNER is the foreground process group
+that was in front when it was set, and an entry is only current while that
+group still is -- see `cooked--foreground-group\='.  That is what retires a
+variable when its program exits back to the shell, with or without shell
+integration, and without the program having to unset it on the way out.")
+
+(defun cooked--osc-iterm (parts)
+  "Handle the OSC 1337 PARTS that reach Lisp.  Only `SetUserVar\=' is read.
+
+The core keeps `File=\=' for itself, and the rest of iTerm2\='s channel --
+`CurrentDir\=', `ShellIntegrationVersion\=' -- either has a standard spelling
+cooked already reads or means nothing here."
+  (let ((payload (string-join parts ";"))
+        (case-fold-search nil))
+    (when (string-match
+           "\\`SetUserVar=\\([A-Za-z0-9_.-]\\{1,64\\}\\)=\\([A-Za-z0-9+/=]*\\)\\'"
+           payload)
+      (let ((name (match-string 1 payload))
+            (encoded (match-string 2 payload)))
+        (when (<= (length encoded) (cddr cooked--user-var-limits))
+          (when-let* ((bytes (ignore-errors (base64-decode-string encoded))))
+            (cooked--set-user-var
+             name (cooked--child-text (decode-coding-string bytes 'utf-8)
+                                      (cadr cooked--user-var-limits)))))))))
+
+(defun cooked--set-user-var (name value)
+  "Record user variable NAME as VALUE for the program now in the foreground.
+
+An empty VALUE unsets NAME.  Entries another program left behind are dropped
+here rather than kept for a group that will not come back: the foreground is
+refreshed first, which is also what lets the mode line see this one at once
+instead of after the next state change."
+  (cooked--update-foreground-label)
+  (let ((owner cooked--foreground-group))
+    (setq cooked--user-vars
+          (seq-take
+           (append (unless (string-empty-p value)
+                     (list (cons name (cons value owner))))
+                   (seq-filter (lambda (entry)
+                                 (and (eql (cddr entry) owner)
+                                      (not (equal (car entry) name))))
+                               cooked--user-vars))
+           (car cooked--user-var-limits))))
+  (force-mode-line-update))
 
 (defvar-local cooked--color-remaps nil
   "Alist of color kind to face remapping cookie, so OSC 110/111/112 can undo a set.")

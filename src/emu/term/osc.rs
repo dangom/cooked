@@ -453,22 +453,21 @@ impl State {
         let Ok(code) = code.parse::<u16>() else {
             return;
         };
-        // A hostile stream should not get to size our heap for us, and nothing
-        // legitimate — title, working directory, hyperlink, clipboard — comes close.
-        // 1337 is the exception and needs its own bound, because what it carries is a
-        // whole base64 image; the parser has already capped it at `MAX_OSC_RAW`.
-        let limit = if code == 1337 {
-            crate::emu::parser::MAX_OSC_RAW
-        } else {
-            OSC_PAYLOAD_LIMIT
-        };
-        if params[1..].iter().map(|p| p.len()).sum::<usize>() > limit {
-            return;
-        }
         // Only `File=` is ours. `OSC 1337` is iTerm2's whole private channel —
         // `SetUserVar`, `CurrentDir`, `ShellIntegrationVersion` — and swallowing all of
         // it would quietly close a door Lisp can already reach through `Event::Osc`.
+        // Taken before the limit below, because an inline image is the one payload
+        // allowed past it: it is a whole base64 file, and the parser has already capped
+        // it at `MAX_OSC_RAW`.
         if code == 1337 && self.iterm_file(params) {
+            return;
+        }
+        // A hostile stream should not get to size our heap for us, and nothing
+        // legitimate that reaches Lisp — title, working directory, clipboard, a user
+        // variable — comes close. The rest of 1337 included: the image allowance used
+        // to cover the whole code, which let a `SetUserVar` carry eight megabytes into
+        // a Lisp string.
+        if params[1..].iter().map(|p| p.len()).sum::<usize>() > OSC_PAYLOAD_LIMIT {
             return;
         }
         // Payloads are handed over lossily rather than dropped: a mangled title is

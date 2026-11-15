@@ -710,6 +710,16 @@ marked command starts.  What it misses is one quiet command following another
 at an unmarked shell, where nothing changes state -- so the label is a
 best-effort hint, and is allowed to be.")
 
+(defvar-local cooked--foreground-group nil
+  "The child\='s foreground process group as of the last label refresh, or nil.
+
+Kept beside `cooked--foreground-label\=' for the same reason and by the same
+writer, `cooked--update-foreground-label\=': the mode line asks whose variables
+`cooked--user-vars\=' still are, and it must not ask the OS to find out.  Unlike
+the label it is not nil for the session\='s own child -- a program run directly
+by `cooked-exec\=' is that child, and its variables are as much its own as any
+job\='s.")
+
 (defun cooked--update-foreground-label ()
   "Refresh `cooked--foreground-label\=' for what the child is running now.
 
@@ -723,12 +733,13 @@ prompt: `cat\=' and `sleep\=' hold one too, and cooked reads those as `edit\='
 because they genuinely are a line being edited.  Those are exactly the cases
 where the program\='s name is the only thing on screen saying what the line will
 be read by -- so the test is which process, not which policy."
-  (setq cooked--foreground-label
-        (and cooked--session
-             (let ((foreground (cooked--foreground-pid cooked--session)))
-               (and foreground
-                    (not (eql foreground (cooked--pid cooked--session)))
-                    (cooked--foreground-program))))))
+  (let ((foreground (and cooked--session
+                         (cooked--foreground-pid cooked--session))))
+    (setq cooked--foreground-group foreground
+          cooked--foreground-label
+          (and foreground
+               (not (eql foreground (cooked--pid cooked--session)))
+               (cooked--foreground-program)))))
 
 (defun cooked--override-applies-p (condition)
   "Whether CONDITION selects what the child is running now."

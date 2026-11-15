@@ -653,6 +653,23 @@ fn other_iterm_1337_messages_still_reach_lisp() {
 }
 
 #[test]
+fn only_an_iterm_image_is_allowed_past_the_osc_payload_limit() {
+    // The image allowance is for images. A `SetUserVar` is a short string bound for a
+    // Lisp handler, and one the size of a picture is a stream sizing our heap.
+    let mut t = with_metrics(10, 20);
+    let huge = "A".repeat(OSC_PAYLOAD_LIMIT + 1);
+    t.feed(format!("\x1b]1337;SetUserVar=model={huge}\x07").as_bytes());
+    let events = t.drain().events;
+    assert!(!events.iter().any(|e| matches!(e, Event::Osc(1337, ..))));
+
+    // While an image past it still lands -- padded with an argument nobody reads,
+    // so the size is the escape's and not the picture's.
+    let png = rgba_png(10, 20, &[0; 10 * 20 * 4]);
+    t.feed(format!("\x1b]1337;File=inline=1;pad={huge}:{}\x07", b64(&png)).as_bytes());
+    assert_eq!(t.drain().images.len(), 1);
+}
+
+#[test]
 fn a_png_transmission_needs_no_dimensions_of_its_own() {
     // Clients omit `s=`/`v=` for PNG, because the file already says.
     let png = rgba_png(30, 20, &[0; 30 * 20 * 4]);

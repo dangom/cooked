@@ -278,18 +278,49 @@ is the shell saying the last command is over, whether or not it said so with a `
 
 ## Adding your own escape sequences
 
-Every OSC except 133 is passed through verbatim, so teaching cooked a new sequence
-is Lisp, not Rust:
+Every OSC the core does not keep for itself is passed through verbatim, so teaching
+cooked a new sequence is Lisp, not Rust:
 
 ```elisp
 (add-to-list 'cooked-osc-handlers
-             (cons 1337 (lambda (parts) (message "iTerm2 says %S" parts))))
+             (cons 1338 (lambda (parts) (message "the child says %S" parts))))
 ```
 
 The native core only interprets sequences that change the terminal itself — the
 alternate screen, mouse and paste modes, device replies. What a sequence *means to
-Emacs* is Emacs' business. OSC 133 is the one exception: it decides who owns the
-keyboard, which is core behaviour rather than user-extensible policy.
+Emacs* is Emacs' business. The exceptions are the ones that are core behaviour rather
+than user-extensible policy: OSC 133 decides who owns the keyboard, OSC 8 is per-cell
+link state, and OSC 66 and iTerm2's `OSC 1337 ; File=` write to the grid. The rest of
+1337 comes through.
+
+### Program variables in the mode line
+
+A program can publish a name and value to its terminal with iTerm2's `SetUserVar`, which
+WezTerm also reads: `ESC ] 1337 ; SetUserVar=NAME=BASE64 BEL`. cooked shows the names in
+`cooked-mode-line-user-vars` (default `("model")`) after the program's name in the mode
+line, for as long as the program that set them is in the foreground. When it exits they
+go with it.
+
+The value is only displayed: control and bidirectional-override characters are stripped,
+it is capped at 64 columns, and a buffer holds at most 16 variables. That is the same
+reach a window title already has.
+
+Claude Code does not send this itself, but its status line command can. Claude Code runs
+the command on every status update with JSON on stdin, `model.display_name` included:
+
+```sh
+#!/bin/sh
+# ~/.claude/statusline.sh, as "statusLine": {"type": "command", "command": "~/.claude/statusline.sh"}
+input=$(cat)
+model=$(printf '%s' "$input" | jq -r '.model.display_name')
+printf '\033]1337;SetUserVar=model=%s\007' "$(printf '%s' "$model" | base64 | tr -d '\n')" \
+  >/dev/tty 2>/dev/null
+printf '%s\n' "$model"    # what Claude Code shows in its own status line
+```
+
+Written to `/dev/tty` because the command's stdout is captured by Claude Code rather than
+sent to the terminal. Under tmux the sequence stops at tmux, which does not pass `OSC
+1337` through.
 
 A handler can *answer* as well as observe. `cooked--reply-osc` frames the reply, so no
 Lisp splices control bytes by hand and no payload can close the sequence early:
