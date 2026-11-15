@@ -208,6 +208,29 @@ pub struct Scrolled {
     pub wrapped: bool,
 }
 
+/// How much scrollback Emacs keeps, and what has been dropped to honour it.
+///
+/// The settings arrive with every drain -- see [`Term::set_scrollback`] -- because they
+/// are Emacs' (`cooked-scrollback-lines`, `cooked-rejoin-wrapped-lines`) and a drain is
+/// the one call that always has them to hand.
+#[derive(Debug, Clone, Default)]
+struct ScrollbackCap {
+    /// Lines Emacs keeps, or `None` to keep everything and drop nothing.
+    cap: Option<usize>,
+    /// Whether a wrapped row joins the next on one buffer line, which is what decides
+    /// how many lines a run of rows makes.
+    rejoin: bool,
+    /// Whether the line Emacs received last is still open -- ended by a wrapped row --
+    /// so that the front of `pending_scrollback` continues it.
+    continues: bool,
+    /// Rows dropped since the last drain.
+    dropped_rows: usize,
+    /// Pictures shown on those rows.
+    dropped_images: Vec<ImageId>,
+    /// Whether the next batch must begin by closing the line Emacs holds open.
+    break_before: bool,
+}
+
 /// Everything that changed since the last drain.
 #[derive(Debug, Clone, Default)]
 pub struct Delta {
@@ -282,6 +305,15 @@ pub struct Delta {
     /// rewrite. `anchor_to_lisp` already spells both, so the two cases cost nothing to
     /// tell apart here.
     pub marks: Vec<(MarkId, Anchor)>,
+    /// Scrolled rows dropped since the last drain because Emacs would only have trimmed
+    /// them: the rows immediately before `scrolled`, ending at `scrolled_base`. An
+    /// [`Anchor`] in them names text that will never exist.
+    pub dropped: usize,
+    /// Pictures those rows showed, which Emacs may be holding from when they were live.
+    pub dropped_images: Vec<ImageId>,
+    /// Whether `scrolled` must begin by ending the line Emacs holds open: the rows that
+    /// would have continued it were dropped.
+    pub break_before: bool,
 }
 
 /// A reading of everything [`Delta`] carries, cheap enough to take on every read.
@@ -321,7 +353,9 @@ impl Pending {
     fn of(state: &State) -> Self {
         Self {
             touches: state.screen().touches(),
-            scrolled: state.pending_scrollback.len(),
+            // The eviction count rather than the queue's length: a drop can leave the
+            // length where it was across a read that scrolled a thousand rows.
+            scrolled: state.evicted_total,
             images: state.pending_images.len(),
             links: state.pending_links.len(),
             events: state.events.len(),
@@ -807,9 +841,25 @@ impl Term {
             .iter()
             .map(|image| image.bytes.len())
             .sum();
-        self.state.pending_scrollback.len()
-            + self.state.events.len()
-            + image_bytes / IMAGE_BACKLOG_UNIT
+        // Under a cap, pending scrollback is not owed to Emacs row by row: what Emacs
+        // would trim is dropped where it waits (see `State::drop_doomed_scrollback`), so
+        // the child need not be held back for it -- and holding it back was what made a
+        // flood cost every row it printed. Counted only past four caps' worth, which
+        // only one logical line longer than that can reach, being the one thing a drop
+        // of whole lines cannot shorten.
+        let rows = self.state.pending_scrollback.len();
+        let scrollback = match self.state.scrollback.cap {
+            Some(cap) => rows.saturating_sub(cap.max(1).saturating_mul(4)),
+            None => rows,
+        };
+        scrollback + self.state.events.len() + image_bytes / IMAGE_BACKLOG_UNIT
+    }
+
+    /// Take Emacs' scrollback settings: the lines it keeps (`None` for all of them) and
+    /// whether wrapped rows are rejoined, which is what a line is. See
+    /// [`State::drop_doomed_scrollback`] for what the cap is used for.
+    pub fn set_scrollback(&mut self, cap: Option<usize>, rejoin: bool) {
+        self.state.set_scrollback(cap, rejoin);
     }
 
     /// Text of the last non-blank line — the prompt a `getpass` child just printed.
@@ -957,6 +1007,12 @@ struct State {
     on_alt: bool,
     pen: Style,
     pending_scrollback: VecDeque<Scrolled>,
+    /// Lines of the buffer `pending_scrollback` will make, counted the way
+    /// `cooked-scrollback-lines` counts them. See [`State::drop_doomed_scrollback`].
+    pending_lines: usize,
+    /// What Emacs keeps of the scrollback, and what was dropped for it since the last
+    /// drain.
+    scrollback: ScrollbackCap,
     images: ImageStore,
     kitty: Kitty,
     /// Images transmitted since the last drain, awaiting their one trip to Lisp.

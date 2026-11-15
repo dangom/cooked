@@ -246,6 +246,8 @@ symbols! {
     // fallback, so this list cannot quietly fall behind the call sites.
     Scrolled => ":scrolled",
     ScrolledSpans => ":scrolled-spans",
+    Dropped => ":dropped",
+    DroppedImages => ":dropped-images",
     Rows => ":rows",
     Height => ":height",
     Used => ":used",
@@ -271,9 +273,10 @@ symbols! {
     // consing `Deco` is packed to avoid, paid per run instead.
     Glyph => "glyph",
     Image => "image",
-    // How an `Anchor` is spelled: a character offset into this drain's scrollback, or a
-    // cell on the live grid.
+    // How an `Anchor` is spelled: a character offset into this drain's scrollback, a
+    // cell on the live grid, or a row dropped before it was sent.
     AtScrolled => "scrolled",
+    AtDropped => "dropped",
     AtScreen => "screen",
     // The event tags. One per event of every drain that has any.
     Bell => "bell",

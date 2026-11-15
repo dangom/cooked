@@ -2478,3 +2478,82 @@ rectangle of exactly the right size in exactly the right place, which is what a
       (cooked--apply (cooked-tests--image-update 2 3 1 (make-string 300 ?x)))
       (should (gethash 2 cooked--image-data))
       (should-not (cooked-tests--image-cells-without-display)))))
+
+;;;; Styling a flood when it is shown
+
+(defun cooked-tests--flood-faces (lines cap eager)
+  "The text and every character's face after a flood of LINES coloured lines.
+CAP is `cooked-scrollback-lines'.  EAGER non-nil styles everything as it
+arrives, as cooked did before `cooked--defer-styles'; otherwise what was
+deferred is styled afterwards, as jit-lock would on display.  Returns (TEXT
+FACES DEFERRED), DEFERRED being whether anything was left to be styled later."
+  (let* ((file (make-temp-file "cooked-flood"))
+         (cooked-scrollback-lines cap)
+         (cooked--eager-lines (if eager most-positive-fixnum cooked--eager-lines))
+         (last (format "word%d" (1- lines))))
+    (with-temp-file file
+      (dotimes (i lines)
+        (insert (format "\e[3%dmword%d\e[0m plain \e[1;4%dmbold\e[0m\n"
+                        (% i 8) i (% (/ i 8) 8)))))
+    (unwind-protect
+        (cooked-tests--with-session
+            (list "/bin/sh" "-c" (format "sleep 0.3; cat %s; sleep 5" file))
+          (should (cooked-tests--settle
+                   (lambda () (save-excursion
+                                (goto-char (point-min))
+                                (search-forward last nil t)))))
+          (save-restriction
+            (widen)
+            (let ((deferred (and (next-single-property-change
+                                  (point-min) 'cooked-styles)
+                                 t)))
+              (cooked--style-region (point-min) (point-max))
+              (list (buffer-substring-no-properties (point-min) (point-max))
+                    (let (faces)
+                      (dotimes (i (- (point-max) (point-min)))
+                        (push (get-text-property (+ (point-min) i) 'face) faces))
+                      (nreverse faces))
+                    deferred))))
+      (delete-file file))))
+
+(ert-deftest cooked-a-flood-styled-on-display-matches-one-styled-on-arrival ()
+  "Deferring a flood's styling changes when the faces go on, not which.
+Every character of the buffer carries the face it would have had if the whole
+flood had been styled as it arrived."
+  (let ((lazy (cooked-tests--flood-faces 600 nil nil))
+        (eager (cooked-tests--flood-faces 600 nil t)))
+    (should (nth 2 lazy))
+    (should-not (nth 2 eager))
+    (should (equal (nth 0 lazy) (nth 0 eager)))
+    (should (equal (nth 1 lazy) (nth 1 eager)))))
+
+(ert-deftest cooked-a-trimmed-flood-keeps-its-faces-on-what-is-left ()
+  "Trimming text off the front of a deferred batch leaves the rest styled right.
+With a cap well under the flood, the core drops what would be trimmed, Emacs
+trims the rest, and what survives still matches styling it on arrival."
+  (let ((lazy (cooked-tests--flood-faces 1500 100 nil))
+        (eager (cooked-tests--flood-faces 1500 100 t)))
+    (should (nth 2 lazy))
+    (should (equal (nth 0 lazy) (nth 0 eager)))
+    (should (equal (nth 1 lazy) (nth 1 eager)))))
+
+(ert-deftest cooked-a-command-dropped-whole-is-forgotten ()
+  "A command entirely on dropped rows goes; one that printed nothing stays.
+Both collapse to an empty region at the front of the batch, and only the
+prompt tells them apart: the dropped one's went with it."
+  (with-temp-buffer
+    (insert "older\nprompt\nbatch\n")
+    (let* ((front 14)
+           (at (lambda (pos) (copy-marker pos)))
+           (dropped (cooked--command-make :start (funcall at front)
+                                          :end (funcall at front)
+                                          :prompt (funcall at front)))
+           (empty (cooked--command-make :start (funcall at front)
+                                        :end (funcall at front)
+                                        :prompt (funcall at 7)))
+           (older (cooked--command-make :start (funcall at 1)
+                                        :end (funcall at 6)
+                                        :prompt (funcall at 1)))
+           (cooked--commands (list dropped empty older)))
+      (cooked--forget-dropped front nil)
+      (should (equal cooked--commands (list empty older))))))

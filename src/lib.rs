@@ -152,6 +152,12 @@ pub unsafe extern "C" fn emacs_module_init(runtime: *mut Runtime) -> std::ffi::c
         /// With REJOIN non-nil (the default), a line the terminal wrapped is emitted as one
         /// line rather than one per screen row.
         ///
+        /// CAP is how many lines of scrollback Emacs keeps, nil for all of them.  Rows Emacs
+        /// would trim as soon as they arrived are dropped before they are sent: :dropped says
+        /// how many since the last call, :dropped-images which pictures they showed, and an
+        /// anchor into them is spelled (dropped).  The batch then begins with a newline when
+        /// the line Emacs holds open was to be continued by rows that were dropped.
+        ///
         /// :height, :used and :head describe the grid's shape, so the buffer is shaped by what
         /// the emulator has rather than by a second opinion of it: the grid's row count, how many
         /// of those rows are occupied, and how many characters of screen row 0's logical line are
@@ -165,7 +171,7 @@ pub unsafe extern "C" fn emacs_module_init(runtime: *mut Runtime) -> std::ffi::c
         /// :images is neither, and is the one thing that must be consumed *before* :scrolled and
         /// :rows are rendered: it carries resources those rows refer to by id. Each image crosses
         /// once, however often the child sends or places it.
-        "cooked--drain" 1..=2 => drain;
+        "cooked--drain" 1..=3 => drain;
 
         /// Write STRING to the pty of SESSION.
         "cooked--send" 2..=2 => send;
@@ -582,7 +588,11 @@ fn attach(env: Env, args: &[Value]) -> Result<Value> {
 
 fn drain(env: Env, args: &[Value]) -> Result<Value> {
     let rejoin = args.get(1).is_none_or(|v| !env.is_nil(*v));
-    let update = handle(env, args[0])?.drain();
+    let cap = match args.get(2) {
+        Some(v) if !env.is_nil(*v) => Some(env.from_lisp::<i64>(*v)?.max(0) as usize),
+        _ => None,
+    };
+    let update = handle(env, args[0])?.drain(cap, rejoin);
     update_to_lisp(env, &update, rejoin)
 }
 
@@ -828,6 +838,13 @@ fn update_to_lisp(env: Env, update: &Update, rejoin: bool) -> Result<Value> {
         ":links"      => links_to_lisp(env, &update.delta.links)?,
         ":events"     => events,
         ":exit"       => update.exit.map(i64::from),
+        ":dropped"    => update.delta.dropped,
+        ":dropped-images" => update
+            .delta
+            .dropped_images
+            .iter()
+            .map(|id| env.into_lisp(id.0))
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
@@ -1076,6 +1093,11 @@ impl Update {
             return Ok((env.nil(), Vec::new()));
         }
         let mut block = Block::default();
+        // The rows that would have continued the line Emacs holds open were dropped, so
+        // that line ends here rather than running on into the first row kept.
+        if self.delta.break_before {
+            block.push_newline();
+        }
         let mut rows: Vec<RowSpan> = Vec::with_capacity(self.delta.scrolled.len());
         let last = self.delta.scrolled.len() - 1;
 
@@ -1104,13 +1126,16 @@ impl Update {
     ///
     /// `(scrolled . OFFSET)` — a character offset into this drain's scrollback text, for
     /// a row that scrolled away while this drain was accumulating. `(screen ROW . COL)`
-    /// — a cell on the live grid, for one that did not. Resolved here rather than in
+    /// — a cell on the live grid, for one that did not. `(dropped)` — a row that
+    /// scrolled away and was dropped rather than sent, because the scrollback cap would
+    /// have trimmed it on arrival; see [`Delta::dropped`]. Resolved here rather than in
     /// Lisp because the arithmetic is over Rust's absolute row numbering, which is not
     /// something the Lisp side should have to hold a copy of.
     ///
-    /// `nil` when neither applies. Unreachable as things stand — events and scrollback
+    /// `nil` when none applies. Unreachable as things stand — events and scrollback
     /// are taken by the same drain, so nothing can be older than the batch it arrives
-    /// with — and Lisp falls back to the cursor, which is what it used before anchors.
+    /// with, or the rows dropped ahead of it — and Lisp falls back to the cursor, which
+    /// is what it used before anchors.
     fn anchor_to_lisp(&self, env: Env, at: Anchor, rows: &[RowSpan]) -> Result<Value> {
         let base = self.delta.scrolled_base;
         let on_grid = base + self.delta.scrolled.len();
@@ -1119,6 +1144,9 @@ impl Update {
                 sym!(env, "screen")?,
                 env.cons(env.into_lisp(at.row - on_grid)?, env.into_lisp(at.col)?)?,
             );
+        }
+        if at.row < base && at.row >= base - self.delta.dropped {
+            return env.list(&[sym!(env, "dropped")?]);
         }
         match at.row.checked_sub(base).and_then(|i| rows.get(i)) {
             // Trailing blanks are trimmed out of the runs, so a column past the end of

@@ -419,7 +419,7 @@ on both desynchronises the two at the second span of the first styled row --
 where every span after it reads its neighbour's bytes and the buffer comes out
 miscoloured with nothing to point at.  Change it in three places or none.")
 
-(defun cooked--render-block (block &optional row)
+(defun cooked--render-block (block &optional row props defer)
   "Insert BLOCK at point, with its styling and decoration applied.
 
 BLOCK is (TEXT STYLE-SPANS DECO-SPANS LINK-SPANS WIDTH UNIFORM), the one shape
@@ -460,28 +460,151 @@ does, scrollback does not.  It also stands in for the origin a shade glyph\='s
 dither is phased against.  Scrollback passes neither and loses at most a seam on
 that one glyph kind.
 
+PROPS, a property list, is put on the whole of the text as it goes in, before
+anything else is applied over it.  On the text rather than over it afterwards:
+the styling has by then cut it into a run per span, and a property added across
+those runs is added to every one of them -- which for a styled batch of
+scrollback was a sixth of the time it took to render.
+
+DEFER non-nil lets the styling of a long batch wait until it is displayed: see
+`cooked--defer-styles'.  Scrollback asks for it; a live row, which is on screen
+by definition, does not.
+
 Returns the position the text was inserted at."
   (pcase-let ((`(,text ,styles ,decos ,links) block))
     (let ((start (point)))
-      (insert text)
-      ;; Walked with an index rather than mapped, because the whole reason the spans
-      ;; arrive packed is that nothing per span should be allocated on this path: no
-      ;; cons for the span, none for its colours, and none for the cache key
-      ;; `cooked--face-packed' looks the face up by.  See `Block::push_style'.
-      (let ((i 0)
-            (limit (length styles)))
-        (while (< i limit)
-          (when-let* ((face (cooked--face-packed styles (+ i 8))))
-            (put-text-property (+ start (cooked--u32 styles i))
-                               (+ start (cooked--u32 styles (+ i 4)))
-                               'face face))
-          (setq i (+ i cooked--style-record))))
-      (dolist (span decos)
-        (pcase-let ((`(,from ,deco) span))
-          (cooked--apply-deco (+ start from) deco (and row start) row)))
-      (when links
-        (cooked--render-link-spans start links))
+      ;; With the change hooks running: this is the edit, and everything listening
+      ;; -- jit-lock marking the text unfontified, a mode's caches -- hears about it.
+      (insert (if props (apply #'propertize text props) text))
+      ;; Without them for what follows, which only dresses the text just inserted.
+      ;; Every property set ran `after-change-functions' again over text they had
+      ;; just been told about, and on a styled flood that was 40% of the time spent
+      ;; applying faces -- a million calls to jit-lock to say again that new text is
+      ;; unfontified, which it already is by having no `fontified' property at all.
+      (let ((inhibit-modification-hooks t))
+        (unless (and defer (cooked--defer-styles start styles))
+          (cooked--apply-styles styles start 0 most-positive-fixnum))
+        (dolist (span decos)
+          (pcase-let ((`(,from ,deco) span))
+            (cooked--apply-deco (+ start from) deco (and row start) row)))
+        (when links
+          (cooked--render-link-spans start links)))
       start)))
+
+;;;; Styling scrollback when it is looked at
+
+(defconst cooked--eager-lines 64
+  "Batches of scrollback up to this many lines are styled as they arrive.
+
+Ordinary output: a command's few lines, a prompt.  A longer batch only arrives
+in a flood, where nearly every line is trimmed by `cooked-scrollback-lines'
+before anything shows it, and its styling waits for `cooked--style-region' --
+which jit-lock calls for whatever is about to be displayed, before it is.")
+
+(defun cooked--style-index (styles offset)
+  "Index of the first span in STYLES ending after OFFSET, in records.
+STYLES is a block's packed STYLE-SPANS, which are in order of offset and do not
+overlap, so their ends are ordered too and this is a binary search."
+  (let ((lo 0)
+        (hi (/ (length styles) cooked--style-record)))
+    (while (< lo hi)
+      (let ((mid (ash (+ lo hi) -1)))
+        (if (> (cooked--u32 styles (+ (* mid cooked--style-record) 4)) offset)
+            (setq hi mid)
+          (setq lo (1+ mid)))))
+    lo))
+
+(defun cooked--apply-styles (styles base from to)
+  "Put the faces of STYLES on the text whose offsets run from FROM to TO.
+Offset 0 is the buffer position BASE.  A span reaching past either bound is
+clipped to it.
+
+Walked with an index rather than mapped, because the whole reason the spans
+arrive packed is that nothing per span should be allocated on this path: no
+cons for the span, none for its colours, and none for the cache key
+`cooked--face-packed' looks the face up by.  See `Block::push_style'.  The
+caller binds `inhibit-modification-hooks': this only dresses text."
+  (let ((i (* cooked--style-record (cooked--style-index styles from)))
+        (limit (length styles)))
+    (while (and (< i limit) (< (cooked--u32 styles i) to))
+      (when-let* ((face (cooked--face-packed styles (+ i 8))))
+        (put-text-property (+ base (max from (cooked--u32 styles i)))
+                           (+ base (min to (cooked--u32 styles (+ i 4))))
+                           'face face))
+      (setq i (+ i cooked--style-record)))))
+
+(defun cooked--defer-styles (start styles)
+  "Leave the batch of scrollback from START to point to be styled when shown.
+Return non-nil if it was, in which case the caller styles none of it now.
+
+Only a batch of more than `cooked--eager-lines' lines.  It is given a
+`cooked-styles' record -- (STYLES . SKIPPED), the packed spans and how many of
+the batch's characters have since been trimmed off its front -- and
+`cooked--style-region' puts the faces on whatever part of it jit-lock is about
+to display.
+
+Why: a span costs a `put-text-property', and a flood is a million of them for
+text `cooked-scrollback-lines' deletes before anything has shown it.  jit-lock
+asks for exactly the text about to be displayed, before displaying it, and asks
+again whenever text has been made unfontified -- so nothing is ever shown
+without its faces, and nothing that is never shown is paid for.  The one
+setting that would let text be shown first, `jit-lock-defer-time', is turned
+off here for that reason: a terminal flashing its output uncoloured is flicker."
+  (when (and (> (length styles) 0)
+             (> (count-lines start (point)) cooked--eager-lines))
+    (put-text-property start (point) 'cooked-styles (cons styles 0))
+    (unless (memq #'cooked--style-region jit-lock-functions)
+      (setq-local jit-lock-defer-time nil)
+      (jit-lock-register #'cooked--style-region))
+    t))
+
+(defun cooked--styles-run-start (pos record)
+  "Where the run of text carrying RECORD as its `cooked-styles' begins, up to POS."
+  (if (and (> pos (point-min))
+           (eq (get-text-property (1- pos) 'cooked-styles) record))
+      (previous-single-property-change pos 'cooked-styles nil (point-min))
+    pos))
+
+(defun cooked--styles-cut (pos)
+  "The `cooked-styles' record a cut at POS would split, or nil.
+That is, one carried by the text on both sides of POS."
+  (when-let* (((> pos (point-min)))
+              (record (get-text-property pos 'cooked-styles))
+              ((eq record (get-text-property (1- pos) 'cooked-styles))))
+    record))
+
+(defun cooked--style-region (beg end)
+  "Style the scrollback between BEG and END that `cooked--defer-styles' left.
+On `jit-lock-functions'.  Styling again what is already styled puts the same
+faces back, so jit-lock refontifying a region is harmless."
+  (save-restriction
+    (widen)
+    (let ((inhibit-modification-hooks t)
+          (inhibit-read-only t)
+          (pos beg))
+      (while (< pos end)
+        (let ((record (get-text-property pos 'cooked-styles))
+              (next (next-single-property-change pos 'cooked-styles nil end)))
+          (when record
+            (let ((base (- (cooked--styles-run-start pos record) (cdr record))))
+              (cooked--apply-styles (car record) base (- pos base) (- next base))))
+          (setq pos next))))))
+
+(defun cooked--style-before-cut (pos)
+  "Account for scrollback before POS being deleted, in the record it cuts.
+Called by `cooked--discard-scrollback' before it deletes from `point-min' to
+POS.  A deferred batch POS falls inside keeps its offsets by counting what went
+off its front."
+  (when-let* ((record (cooked--styles-cut pos)))
+    (setcdr record (+ (cdr record)
+                      (- pos (cooked--styles-run-start pos record))))))
+
+(defun cooked--style-now (beg end)
+  "Style the deferred scrollback from BEG to END now, and stop deferring it."
+  (cooked--style-region beg end)
+  (let ((inhibit-modification-hooks t)
+        (inhibit-read-only t))
+    (remove-text-properties beg end '(cooked-styles nil))))
 
 ;;;; Who owns the keyboard
 ;;
@@ -1209,6 +1332,13 @@ Sharing the *object* matters as well as sharing the value.
 `(read-only)\=' lists read as a change and provoke an interval rewrite over text
 that already carries exactly what is being asked for.")
 
+(defconst cooked--scrollback-props
+  `(cooked-scrollback t ,@cooked--read-only-props)
+  "What every character of scrollback carries: the read-only protection the
+live screen gets from `cooked--protect', and the mark saying it is scrollback.
+One list, so the values are the same objects every batch -- see
+`cooked--read-only-props' for why that matters.")
+
 (defun cooked--render-scrolled (block)
   "Append BLOCK to the scrollback above the live screen, returning where it went.
 
@@ -1232,14 +1362,12 @@ that one glyph kind, exactly as a live row rendered without a known origin does.
     (widen)
     (save-excursion
       (goto-char cooked--screen-start)
-      (let ((start (cooked--render-block block)))
-        ;; Scrollback never changes again, so it is protected once, here, rather
-        ;; than re-swept on every redisplay.  The read-only half is
-        ;; `cooked--read-only-props', shared with `cooked--protect' so the two
-        ;; halves of the transcript cannot drift apart; only the marker saying
-        ;; this text is scrollback is added on top of it.
-        (add-text-properties start (point)
-                             `(cooked-scrollback t ,@cooked--read-only-props))
+      ;; Scrollback never changes again, so it is protected once, as it goes in,
+      ;; rather than re-swept on every redisplay.  The read-only half is
+      ;; `cooked--read-only-props', shared with `cooked--protect' so the two halves
+      ;; of the transcript cannot drift apart; only the marker saying this text is
+      ;; scrollback is added on top of it.
+      (let ((start (cooked--render-block block nil cooked--scrollback-props t)))
         ;; One search over the batch, which for a flood of plain text finds
         ;; nothing and costs about what the insertion did.
         (when (cooked--cell-fit-p)
@@ -2549,8 +2677,11 @@ in src/lib.rs:
                        drain accumulated.  BATCH-START, from
                        `cooked--render-scrolled', is where that text begins.
   (screen ROW . COL)   a cell on the live grid, for a row still on it.
+  (dropped)            a row the core dropped instead of sending, because the
+                       scrollback cap would have trimmed it on arrival: the
+                       front of the batch, BATCH-START.
 
-Both are resolvable only after the scrollback and the damaged rows have been
+All are resolvable only after the scrollback and the damaged rows have been
 rendered, which is where `cooked--apply' dispatches events.
 
 The fallback is the cursor.  That is precise enough whenever a drain carries a
@@ -2561,6 +2692,11 @@ one drain would all land on the same position."
      (if batch-start
          (min (+ batch-start offset) (point-max))
        (cooked--cursor-position)))
+    ;; On a row the core dropped rather than send, because the scrollback cap would
+    ;; have trimmed it on arrival: its text never existed here, and the front of the
+    ;; batch is where trimming it would have collapsed a marker to.
+    ('(dropped)
+     (or batch-start (cooked--cursor-position)))
     (`(screen ,row . ,col)
      (save-excursion
        (cooked--goto-screen-row row)
@@ -2774,12 +2910,14 @@ on sessions already running as well as on the next one."
 (defcustom cooked-backlog-limit 8000
   "Items awaiting collection before the child is left to block on its writes.
 
-Counts scrolled-off lines plus undelivered events.  Raising it does not make
-output render faster: throughput is bounded by how fast Emacs can insert text,
-not by this queue.  What it changes is who waits.  Below the limit the child
-runs ahead and finishes sooner while Emacs catches up; at the limit the reader
-stops draining the pty, the pty's buffer fills, and the child blocks in `write'
-exactly as it would against a slow terminal.  Nothing is ever dropped.
+Counts undelivered events, and scrolled-off lines when `cooked-scrollback-lines'
+is nil.  Under a cap, scrollback Emacs would trim the moment it arrived is
+dropped where it waits instead, so it never holds the child back.  Raising this
+does not make output render faster: throughput is bounded by how fast Emacs can
+insert text, not by this queue.  What it changes is who waits.  Below the limit
+the child runs ahead and finishes sooner while Emacs catches up; at the limit
+the reader stops draining the pty, the pty's buffer fills, and the child blocks
+in `write' exactly as it would against a slow terminal.
 
 The cost of raising it is memory, and a larger worst-case pause when a big
 backlog finally lands in one redisplay.  Tuned together with

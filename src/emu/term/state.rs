@@ -125,10 +125,86 @@ impl State {
                         },
                     )
                 }));
+            if self.ends_line(row.wrapped) {
+                self.pending_lines += 1;
+            }
             self.pending_scrollback.push_back(Scrolled {
                 runs: row.runs,
                 wrapped: row.wrapped,
             });
+        }
+        self.drop_doomed_scrollback();
+    }
+
+    /// Whether a scrolled row ends a line of the buffer it is bound for.
+    ///
+    /// Under rejoin a wrapped row is continued by the next one on the same buffer line;
+    /// otherwise every row is a line of its own. The unit `cooked-scrollback-lines`
+    /// counts in, which is the one this has to count in to drop what Emacs would trim.
+    fn ends_line(&self, wrapped: bool) -> bool {
+        !(self.scrollback.rejoin && wrapped)
+    }
+
+    /// Drop the oldest pending scrollback that Emacs would delete the moment it arrived.
+    ///
+    /// Emacs keeps `cooked-scrollback-lines` of transcript and trims the rest after
+    /// every drain, so a flood that scrolls more than that between two drains hands over
+    /// rows only to have them inserted, styled and deleted again -- which was nine
+    /// tenths of the work a 100,000-line flood cost, at a million `put-text-property`
+    /// calls for text nobody would ever see. Every other terminal drops them where it
+    /// stores them; this is cooked doing the same, at the one place that knows both the
+    /// cap and the rows.
+    ///
+    /// Whole lines, oldest first, and only past a margin over the cap, so a steady
+    /// trickle does not pay for a drop per row. What goes is accounted for on the next
+    /// [`Delta`]: how many rows (so anchors into them can be told apart from nonsense),
+    /// the pictures they showed (so Emacs can let go of any it holds), and whether the
+    /// line Emacs last received was left open by a wrapped row whose continuation has
+    /// just been dropped -- in which case the batch must close it, or the first kept
+    /// line would be welded onto it.
+    fn drop_doomed_scrollback(&mut self) {
+        let Some(cap) = self.scrollback.cap else {
+            return;
+        };
+        let cap = cap.max(1);
+        if self.pending_lines <= cap + (cap / 8).max(1) {
+            return;
+        }
+        // The front row continuing a line Emacs already holds open is the one case the
+        // batch has to close that line itself: the rest of it is about to go.
+        if self.scrollback.continues {
+            self.scrollback.break_before = true;
+        }
+        while self.pending_lines > cap {
+            let Some(row) = self.pending_scrollback.pop_front() else {
+                break;
+            };
+            self.scrollback.dropped_rows += 1;
+            for run in &row.runs {
+                if let Some(Deco::Images(places)) = &run.deco {
+                    self.scrollback
+                        .dropped_images
+                        .extend(places.iter().map(|place| place.id));
+                }
+            }
+            if self.ends_line(row.wrapped) {
+                self.pending_lines -= 1;
+            }
+        }
+        // Whole lines went, so what is left starts one.
+        self.scrollback.continues = false;
+    }
+
+    /// Take the scrollback settings a drain brings, recounting if the unit changed.
+    pub(super) fn set_scrollback(&mut self, cap: Option<usize>, rejoin: bool) {
+        self.scrollback.cap = cap;
+        if self.scrollback.rejoin != rejoin {
+            self.scrollback.rejoin = rejoin;
+            self.pending_lines = self
+                .pending_scrollback
+                .iter()
+                .filter(|row| self.ends_line(row.wrapped))
+                .count();
         }
     }
 
@@ -304,8 +380,20 @@ impl State {
         // tried and measured as noise in both directions -- and it is strictly more
         // allocation, since the collect has to build a fresh Vec anyway.
         let scrolled = Vec::from(std::mem::take(&mut self.pending_scrollback));
+        self.pending_lines = 0;
         // Taken before the batch is handed over, so it names the first line *in* it.
         let scrolled_base = self.evicted_total - scrolled.len();
+        let dropped = std::mem::take(&mut self.scrollback.dropped_rows);
+        let mut dropped_images = std::mem::take(&mut self.scrollback.dropped_images);
+        dropped_images.sort_unstable();
+        dropped_images.dedup();
+        let break_before = std::mem::take(&mut self.scrollback.break_before);
+        // Whether the line this batch ends on is left open in Emacs, for the next drop
+        // to know it must close it. The same test `scrolled_rows` makes when it decides
+        // whether to end the batch's last row with a newline.
+        if let Some(last) = scrolled.last() {
+            self.scrollback.continues = !self.ends_line(last.wrapped) && !self.on_alt;
+        }
         let events = std::mem::take(&mut self.events);
         // Read here, off the grid as it stands, rather than when the resize re-laid it:
         // the child is signalled on a resize and answers by redrawing, and anything it
@@ -341,6 +429,9 @@ impl State {
             keys,
             events,
             marks,
+            dropped,
+            dropped_images,
+            break_before,
         }
     }
 

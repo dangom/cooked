@@ -3340,3 +3340,117 @@ fn a_mark_after_a_declared_block_joins_the_block() {
     assert_eq!(runs[0].text, "x\u{301}");
     assert_eq!(runs[0].cols, 3);
 }
+
+/// `count` numbered lines, as a child flooding the terminal would print them.
+fn numbered_lines(count: usize) -> Vec<u8> {
+    (0..count)
+        .flat_map(|i| format!("line {i}\r\n").into_bytes())
+        .collect()
+}
+
+#[test]
+fn a_flood_past_the_cap_hands_over_only_the_newest_lines() {
+    let mut t = Term::new(2, 20);
+    t.set_scrollback(Some(10), true);
+    t.feed(&numbered_lines(100));
+    let delta = t.drain();
+    assert!(delta.dropped > 0, "nothing was dropped: {delta:?}");
+    // Every row that left the screen is either handed over or counted as dropped.
+    assert_eq!(delta.dropped + delta.scrolled.len(), 99);
+    // What is kept is the newest, and starts exactly where the drop ended.
+    assert!(delta.scrolled.len() >= 10);
+    assert_eq!(
+        runs_text(&delta.scrolled[0]),
+        format!("line {}", delta.dropped)
+    );
+    assert_eq!(runs_text(delta.scrolled.last().unwrap()), "line 98");
+    assert!(!delta.break_before);
+}
+
+#[test]
+fn without_a_cap_every_row_is_handed_over() {
+    let mut t = Term::new(2, 20);
+    t.set_scrollback(None, true);
+    t.feed(&numbered_lines(100));
+    let delta = t.drain();
+    assert_eq!(delta.dropped, 0);
+    assert_eq!(delta.scrolled.len(), 99);
+}
+
+#[test]
+fn only_whole_lines_are_dropped_under_rejoin() {
+    // Eight columns: every "line NN" of nine or ten characters wraps onto two rows.
+    let mut t = Term::new(2, 8);
+    t.set_scrollback(Some(5), true);
+    t.feed(&numbered_lines(60));
+    let delta = t.drain();
+    assert!(delta.dropped > 0);
+    // The first row kept begins a line: it is not the continuation of one dropped.
+    assert!(runs_text(&delta.scrolled[0]).starts_with("line"));
+    // And the lines kept are counted as Emacs counts them: a wrapped row and its
+    // continuation are one.
+    let lines = delta.scrolled.iter().filter(|row| !row.wrapped).count();
+    assert!(lines >= 5, "kept {lines} lines");
+}
+
+#[test]
+fn a_line_left_open_is_closed_when_its_continuation_is_dropped() {
+    let mut t = Term::new(2, 8);
+    t.set_scrollback(Some(5), true);
+    // A long line whose first rows scroll off and are handed over, wrapped: Emacs then
+    // holds that line open, waiting for the rest.
+    t.feed(b"abcdefghijklmnopqrstuvwxyz");
+    let first = t.drain();
+    assert!(first.scrolled.last().is_some_and(|row| row.wrapped));
+    // The rest of it, and a flood after, are dropped: the batch must end that line.
+    t.feed(b"\r\n");
+    t.feed(&numbered_lines(60));
+    let delta = t.drain();
+    assert!(delta.dropped > 0);
+    assert!(delta.break_before, "the open line was left open: {delta:?}");
+    // And only once.
+    t.feed(&numbered_lines(60));
+    assert!(!t.drain().break_before);
+}
+
+#[test]
+fn a_mark_on_a_dropped_row_is_anchored_before_the_batch() {
+    let mut t = Term::new(2, 20);
+    t.set_scrollback(Some(10), true);
+    t.feed(b"\x1b]133;A\x07$ ");
+    t.feed(&numbered_lines(100));
+    let delta = t.drain();
+    let Some(Event::PromptStart(at, _)) = delta.events.first() else {
+        panic!("no prompt mark: {:?}", delta.events);
+    };
+    assert!(
+        at.row < delta.scrolled_base && at.row >= delta.scrolled_base - delta.dropped,
+        "{at:?} is not on a dropped row (base {}, dropped {})",
+        delta.scrolled_base,
+        delta.dropped
+    );
+}
+
+#[test]
+fn pictures_on_dropped_rows_are_reported() {
+    let mut t = with_metrics(10, 20);
+    t.set_scrollback(Some(4), true);
+    t.place_image(ImageFormat::Png, b"pixels", PixelSize::new(20, 40));
+    let id = t.drain().images.first().expect("the picture is sent").id;
+    t.feed(&numbered_lines(60));
+    let delta = t.drain();
+    assert!(delta.dropped > 0);
+    assert_eq!(delta.dropped_images, vec![id]);
+}
+
+#[test]
+fn under_a_cap_the_child_is_not_held_back_for_scrollback() {
+    let mut t = Term::new(2, 20);
+    t.set_scrollback(Some(10), true);
+    t.feed(&numbered_lines(20_000));
+    assert_eq!(t.backlog(), 0);
+    let mut t = Term::new(2, 20);
+    t.set_scrollback(None, true);
+    t.feed(&numbered_lines(20_000));
+    assert!(t.backlog() > BACKLOG_HIGH_WATER);
+}

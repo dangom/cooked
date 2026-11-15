@@ -168,12 +168,14 @@ again is safe."
           (progn
             (setq cooked--draining t
                   cooked--drain-pending nil)
-            (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines))
+            (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
+                                         cooked-scrollback-lines))
             ;; Bounded in practice: the pending flag is set by a freeze lifting,
             ;; and a freeze that has lifted does not lift again.
             (while (and cooked--drain-pending cooked--session)
               (setq cooked--drain-pending nil)
-              (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines))))
+              (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
+                                         cooked-scrollback-lines))))
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
             (setq cooked--draining nil
@@ -769,6 +771,11 @@ and the region shaped before anything measures it."
     (cooked--relocate-marks (plist-get update :marks) batch-start)
     (dolist (event (plist-get update :events))
       (cooked--handle-event event batch-start))
+    ;; Rows the core dropped instead of sending, as the scrollback cap would have
+    ;; trimmed them: tidy up after them the way `cooked--discard-scrollback' tidies
+    ;; up after a trim.  After the events, which is where their marks landed.
+    (when (and batch-start (> (or (plist-get update :dropped) 0) 0))
+      (cooked--forget-dropped batch-start (plist-get update :dropped-images)))
     ;; After both, which is the ordering `cooked-row-rendered-functions' is
     ;; documented against.
     (cooked--notify-rows-rendered rendered)

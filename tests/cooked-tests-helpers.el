@@ -162,7 +162,8 @@ row first is not testing what it says it is."
     (while (and (< (float-time) deadline) (not (funcall predicate)))
       (accept-process-output nil 0.05)
       (when cooked--session
-        (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines))))
+        (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
+                                      cooked-scrollback-lines))))
     (funcall predicate)))
 
 (defun cooked-tests--pump (seconds)

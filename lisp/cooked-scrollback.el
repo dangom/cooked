@@ -212,6 +212,9 @@ this would otherwise quietly do nothing."
     (save-restriction
       (widen)
       (setq images (cooked--release-images (point-min) end))
+      ;; A batch whose styling is still deferred keeps its offsets by counting what
+      ;; is about to go off its front.  See `cooked--defer-styles'.
+      (cooked--style-before-cut end)
       (cooked--with-child-edit
         (delete-region (point-min) end)))
     (cooked--collect-images images))
@@ -224,6 +227,34 @@ this would otherwise quietly do nothing."
     ;; just deleted, which `cooked--check-seam' would rightly call a desync — and which
     ;; anything else reading the seam before the next drain would believe.
     (setf (cooked-grid-head cooked--grid) 0)))
+
+(defun cooked--forget-dropped (batch-start images)
+  "Tidy up after scrollback the core dropped instead of sending.
+
+The core drops what `cooked-scrollback-lines' would have trimmed the moment it
+arrived -- see `drop_doomed_scrollback' in src/emu/term/state.rs -- and this is
+the half of a trim that still has something to do here, the same two steps
+`cooked--discard-scrollback' takes for text it deletes.
+
+A command recorded entirely on dropped rows has had every marker it owns
+anchored to BATCH-START, and would stand there as an empty region -- a command
+that printed nothing, which is not what happened -- so it goes.  One that
+genuinely printed nothing just above the batch keeps its prompt above it, and
+stays.
+
+IMAGES are the pictures the dropped rows showed, which this buffer may hold
+from when those rows were live; `cooked--collect-images' lets go of each one
+nothing still shows."
+  (setq cooked--commands
+        (seq-remove
+         (lambda (command)
+           (and (cooked-command-end command)
+                (= (cooked--command-start-position command) batch-start)
+                (= (cooked--command-end-position command) batch-start)
+                (memq (cooked--command-prompt-position command)
+                      (list nil batch-start))))
+         cooked--commands))
+  (cooked--collect-images images))
 
 (defun cooked--discard-scrollback-region (beg end)
   "Delete scrollback between BEG and END, telling the emulator only if it must.
@@ -247,6 +278,11 @@ news `cooked--discard-scrollback\=' gives it."
           (save-restriction
             (widen)
             (setq images (cooked--release-images beg end))
+            ;; A hole in a batch whose styling is deferred would shift the offsets of
+            ;; everything after it, so that part is styled now, while they still hold.
+            (when (cooked--styles-cut end)
+              (cooked--style-now end (next-single-property-change
+                                      end 'cooked-styles nil (point-max))))
             (cooked--with-child-edit
               (delete-region beg end)))
           (cooked--collect-images images)

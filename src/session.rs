@@ -911,10 +911,14 @@ impl Session {
     /// which Emacs calls once it has drawn what this returned. See
     /// [`Notifier::acknowledge`] for why the window covers the render rather than the
     /// collection.
-    pub(crate) fn drain(&self) -> Update {
+    pub(crate) fn drain(&self, cap: Option<usize>, rejoin: bool) -> Update {
         self.shared.notifier.acknowledge();
+        let mut term = self.shared.term.held();
+        // Before taking the delta, so the settings this drain was asked under are the
+        // ones the rows accumulating for the next one are counted and dropped by.
+        term.set_scrollback(cap, rejoin);
         Update {
-            delta: self.shared.term.held().drain(),
+            delta: term.drain(),
             mode: self.shared.mode.load(),
             exit: *self.shared.exited.held(),
         }
@@ -1717,13 +1721,13 @@ mod tests {
 
     fn wait_for(session: &Session, mut done: impl FnMut(&Update) -> bool) -> Update {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut merged = session.drain();
+        let mut merged = session.drain(None, true);
         while Instant::now() < deadline {
             if done(&merged) {
                 return merged;
             }
             std::thread::sleep(Duration::from_millis(20));
-            let next = session.drain();
+            let next = session.drain(None, true);
             merged.delta.rows.extend(next.delta.rows);
             merged.delta.scrolled.extend(next.delta.scrolled);
             merged.delta.events.extend(next.delta.events);
@@ -1976,7 +1980,7 @@ mod tests {
         let mut seen = 0usize;
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
-            seen += session.drain().delta.images.len();
+            seen += session.drain(None, true).delta.images.len();
             if seen >= FRAMES {
                 break;
             }
@@ -2007,7 +2011,7 @@ mod tests {
         let mut collected: Vec<String> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            let update = session.drain();
+            let update = session.drain(None, true);
             collected.extend(update.delta.scrolled.iter().map(|line| {
                 line.runs
                     .iter()
@@ -2263,7 +2267,7 @@ mod tests {
         // hold back.
         match when {
             Drain::BeforeTheWrite => {
-                session.drain();
+                session.drain(None, true);
                 session.ready();
                 session.send(b"\n").expect("release the second write");
             }
@@ -2273,7 +2277,7 @@ mod tests {
                 // still lands inside the throttle window -- outside it there is nothing
                 // held back, because `ready`'s own flush sends the byte on the spot.
                 std::thread::sleep(THROTTLED / 4);
-                session.drain();
+                session.drain(None, true);
                 session.ready();
             }
         }
@@ -2392,7 +2396,7 @@ mod tests {
             "the frame was never drawn at all"
         );
         assert_eq!(
-            rendered(&session.drain()).trim(),
+            rendered(&session.drain(None, true)).trim(),
             "ab",
             "the first wakeup must carry the whole of what the child wrote"
         );
@@ -2410,7 +2414,7 @@ mod tests {
             "the first write was never drawn"
         );
         assert_eq!(
-            rendered(&session.drain()).trim(),
+            rendered(&session.drain(None, true)).trim(),
             "a",
             "the child had gone quiet; the first write must not wait on the second"
         );
@@ -2455,7 +2459,7 @@ mod tests {
         // second byte to be earned -- by the ceiling alone, since the child has not paused
         // since.
         std::thread::sleep(Duration::from_millis(50));
-        session.drain();
+        session.drain(None, true);
         session.ready();
         assert!(
             woke_within(&read, Duration::from_millis(300)),
@@ -2509,7 +2513,7 @@ mod tests {
         // The window itself, plus a couple of eager ticks' slack for the reader to have
         // settled back onto the long one.
         std::thread::sleep(INTERACTION_WINDOW + Duration::from_millis(250));
-        session.drain();
+        session.drain(None, true);
         assert!(
             !woke_within(&read, Duration::from_millis(200)),
             "the second write was announced by the drain itself; the re-arm belongs to \

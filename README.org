@@ -89,8 +89,9 @@ mature and fast.
 
 ** Ghostel
 
-Ghostel embeds libghostty — the same engine behind the Ghostty app — and it's the fastest
-of the four on raw throughput. Like eat and vterm, its terminal is a rectangle of
+Ghostel embeds libghostty — the same engine behind the Ghostty app — and it's fast on raw
+throughput, though cooked is now faster on every workload measured below. Like eat and
+vterm, its terminal is a rectangle of
 characters with no idea where a command starts or ends; what it calls "comint support" is
 a minor mode that drops libghostty's colour handling into somebody else's =shell-mode=
 buffer, not a comint-derived terminal. If a native rendering engine is what you're after
@@ -105,6 +106,32 @@ switch at all, and a manual peek (=C-c C-v=) covers the one case the signal can'
 full-screen program with the whole keyboard. The cost is a Rust toolchain and a build
 step (automatic, but real). If you want that structure and don't mind the toolchain,
 cooked is the pick.
+
+** Performance against ghostel
+
+The same workloads, each run in a fresh GUI Emacs (31.1, =-Q=, a 160×50 frame, Emacs'
+default GC settings), both terminals native-compiled and at their default settings. Each
+workload is a program printing as fast as it can; the time is from starting it until its
+last line is in the buffer and drawn.
+
+| Workload                                     | cooked | ghostel |
+|----------------------------------------------+--------+---------|
+| Key echo latency, median of 100              | 1.2 ms |  1.4 ms |
+| 300,000 lines of plain text                  | 0.33 s |  0.90 s |
+| 100,000 lines, ten 256-colour words per line | 0.35 s |  1.00 s |
+| 400 full-screen redraws, alternate screen    | 0.63 s |  1.08 s |
+| 1,500 redraws of a 12-row inline region      | 0.08 s |  0.16 s |
+
+The colour workload's own program takes 0.27 s to print its 20 MB even into
+=/dev/null=, so most of cooked's 0.35 s is the program, not the terminal: cooked's own
+work for it is 0.25 s, of which 0.14 s is garbage collection, and 0.17 s with the larger
+GC threshold most configurations (Doom's included) run with. Two things make floods cheap.
+Scrollback that =cooked-scrollback-lines= would trim the moment it arrived is dropped in
+the native core and never reaches Emacs, and the styling of a long batch of scrollback is
+applied by jit-lock when it is about to be displayed, so lines nobody ever looks at are
+never styled.
+
+Measured on an Apple M5 Pro, macOS 26.6, ghostel 0.62.0 at commit =6dfe798=.
 
 * Installing
 

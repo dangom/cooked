@@ -69,6 +69,15 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Changed
 
+- Output floods are several times faster. Scrollback that `cooked-scrollback-lines`
+  would trim the moment it arrived is dropped in the native core instead of being sent
+  to Emacs, and the child is no longer held back for scrollback while a cap is set.
+  The styling of a long batch of scrollback is applied when it is displayed rather
+  than when it arrives. 100,000 coloured lines took 1.8 s of Emacs time; they now
+  take under 0.2 s.
+- Rust 1.100 or later is required.
+- A first build of the native core in a fresh install deletes cargo's build tree
+  once the library is installed; a checkout that already has one keeps it.
 - `cooked-kill-buffer-on-exit` defaults to `on-success`: a clean exit closes the
   buffer, while a failure keeps its output on screen.
 - The mode line shows the keyboard-state word only for `alt` and `secret`;
@@ -114,6 +123,9 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 - Emacs aborting on macOS when a file was dragged over a cooked buffer.
 - Scrolling other buffers hitching beside a terminal window scrolled up into a
   long history.
+- The checkout not being found, and so the native module, terminfo and shell
+  integration not being found, when cooked is installed by straight or elpaca and
+  loaded compiled.
 
 ### Security
 
