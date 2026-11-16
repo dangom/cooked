@@ -30,8 +30,6 @@
 (require 'comint)
 
 (declare-function cooked-popup-buffer "cooked-popup")
-(declare-function cooked-popup-fit "cooked-popup")
-(declare-function cooked-popup-showing-p "cooked-popup")
 (declare-function cooked-popup-mode "cooked-popup")
 (defvar cooked-host-name)
 
@@ -230,10 +228,7 @@ A run with no end whose process is gone was cut short with whatever ran it."
               (cooked-run--insert (substring bytes 0 whole))
               (cl-incf cooked-run--offset whole)
               (dolist (window (delq nil following))
-                (set-window-point window (point-max)))
-              (when (and (fboundp 'cooked-popup-showing-p)
-                         (cooked-popup-showing-p buffer))
-                (cooked-popup-fit)))))
+                (set-window-point window (point-max))))))
         (setq header-line-format
               (concat (cooked-run--header run)
                       (if (bound-and-true-p cooked-popup-mode) "  ·  q close" "")))

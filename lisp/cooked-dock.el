@@ -351,10 +351,16 @@ row, and the two are put back together where they meet."
 (defun cooked-dock--post-command ()
   "Dock or undock the windows the last command may have scrolled.
 
-Every window in the selected frame showing a cooked buffer, not only the
-selected one: the wheel scrolls the window under the mouse."
+Every window showing a cooked buffer, not only the selected one: the wheel
+scrolls the window under the mouse.  And in every visible frame, not only the
+selected one: a command run in a child frame over this one -- a pop-up stepping
+through what an agent did -- can scroll a window underneath to show where each
+thing happened.  Looking in the selected frame alone, such a window was left
+docked while it was scrolled down onto its own live rows, showing the input
+twice, or scrolled up undocked with its input out of view, until it was next
+clicked."
   (cooked--protect-hook
-    (dolist (window (window-list nil 'no-minibuffer))
+    (dolist (window (window-list-1 nil 'no-minibuffer 'visible))
       (let ((buffer (window-buffer window)))
         (when (and (not (cooked--dock-window-p window))
                    (buffer-local-value 'cooked--session buffer))

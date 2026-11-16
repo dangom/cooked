@@ -54,14 +54,13 @@
   :type 'natnum)
 
 (defcustom cooked-popup-top 0.15
-  "Where the top of a pop-up's frame sits, as a fraction of its parent's height.
-The top stays there whatever is shown, so stepping between buffers of
-different lengths does not move it."
+  "Where the top of a pop-up's frame sits, as a fraction of its parent's height."
   :type 'float)
 
 (defcustom cooked-popup-bottom 0.15
   "How much of the parent's height a pop-up's frame leaves free at the bottom.
-A fraction; the frame grows with its text down to there and no further."
+A fraction.  The frame reaches down to there whatever it shows, so stepping
+between buffers of different lengths neither moves nor resizes it."
   :type 'float)
 
 (defcustom cooked-popup-max-file-size (* 2 1024 1024)
@@ -157,23 +156,20 @@ after which a buffer `cooked-popup-file' made is gone.")
     window))
 
 (defun cooked-popup-fit ()
-  "Size the frame of the pop-up to what it shows, and put it in its place.
-As wide as `cooked-popup-width' allows and as tall as the text, from
-`cooked-popup-top' down to `cooked-popup-bottom' at most.  For a caller
-whose buffer changed while on show."
+  "Size the frame of the pop-up to its parent, and put it in its place.
+As wide as `cooked-popup-width' allows, and from `cooked-popup-top' down to
+`cooked-popup-bottom'.  The same size whatever it shows: a frame that grew
+and shrank with each buffer stepped through moved its edges under the eye,
+and a short buffer is shown with room to spare instead.  For a caller whose
+parent frame changed size while on show."
   (when (and (frame-live-p cooked-popup--frame)
              (display-graphic-p cooked-popup--frame))
     (let* ((frame cooked-popup--frame)
            (parent (frame-parent frame))
-           (window (frame-root-window frame))
            (columns (min cooked-popup-width (max 20 (- (frame-width parent) 4))))
-           (most (max 6 (floor (* (- 1 cooked-popup-top cooked-popup-bottom)
-                                  (frame-height parent))))))
-      ;; The width first: how the text wraps, and so how tall it is, hangs on it.
-      (set-frame-width frame columns)
-      (let* ((pixels (cdr (window-text-pixel-size
-                           window nil nil nil (* (1+ most) (frame-char-height frame)) t)))
-             (lines (max 6 (min most (1+ (ceiling pixels (frame-char-height frame)))))))
+           (lines (max 6 (floor (* (- 1 cooked-popup-top cooked-popup-bottom)
+                                   (frame-height parent))))))
+      (unless (and (= (frame-width frame) columns) (= (frame-height frame) lines))
         (set-frame-size frame columns lines))
       (set-frame-position
        frame

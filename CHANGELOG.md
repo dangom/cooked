@@ -53,8 +53,9 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   variables; `cooked-popup-open-file` does so for file names in a terminal's
   output, as a `cooked-file-open-function`. `cooked-popup-buffer` shows a
   package's own buffer, with `cooked-popup-mode` for its keys (`q` close, `l`
-  back, `v` open in a window). The frame grows with what it shows but its top
-  stays put (`cooked-popup-top`, `cooked-popup-bottom`).
+  back, `v` open in a window). The frame is one size whatever it shows, so
+  stepping between buffers neither moves nor resizes it (`cooked-popup-top`,
+  `cooked-popup-bottom`).
 - `cooked-close` (`C-c C-k`) hangs up on the program, ends the session and
   closes the buffer; `cooked-close-grace` sets how long it waits.
 - `cooked-annotate`: packages can attach clickable notes to stretches of
