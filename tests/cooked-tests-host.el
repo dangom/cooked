@@ -252,6 +252,23 @@ is Emacs's own until the next one.  Nothing else of OSC 51 gets through."
                (lambda () (string-match-p "said" (cooked-tests--text)))))
       (should (equal cooked--completion-nonce "4242")))))
 
+(ert-deftest cooked-host-a-buffer-local-environment-reaches-the-child ()
+  "Regression: started from a buffer whose environment is its own -- as envrc
+leaves one in a direnv project -- the child was given Emacs's global
+environment, without the project's variables or the terminal's own."
+  (cooked-tests-host--with-directory
+    (with-temp-buffer
+      (setq-local process-environment
+                  (cons "COOKED_TEST_FROM_BUFFER=yes" process-environment))
+      (cooked-host-start "envrc"
+                         '("/bin/sh" "-c" "echo \"buf=$COOKED_TEST_FROM_BUFFER prog=$TERM_PROGRAM\"; cat")))
+    (should-not (getenv "COOKED_TEST_FROM_BUFFER"))
+    (sleep-for 0.3)
+    (with-current-buffer (cooked-host-attach "envrc")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "buf=yes prog=cooked"
+                                          (cooked-tests--text))))))))
+
 (ert-deftest cooked-host-a-kept-shell-is-found-again-by-name ()
   "`cooked-host-exec-shell' starts a shell under a name once, and after that
 attaches to it: the same process, in the buffer it is given."

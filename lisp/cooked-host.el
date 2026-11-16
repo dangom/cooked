@@ -122,19 +122,29 @@ session -- filed under that name by the program -- finds the buffer for it.")
 (defun cooked-host--call (input &rest arguments)
   "Run the host program with ARGUMENTS and return what it printed.
 INPUT, if a string, is its standard input.  A failure is a `user-error'
-carrying what the program said about it."
-  (with-temp-buffer
-    (let* ((process-environment
-            (cons (concat "COOKED_HOST_DIR=" (directory-file-name (cooked-host--directory)))
-                  process-environment))
-           (status (if input
-                       (progn (insert input)
-                              (apply #'call-process-region (point-min) (point-max)
-                                     (cooked-host--program) t t nil arguments))
-                     (apply #'call-process (cooked-host--program) nil t nil arguments))))
-      (unless (eql status 0)
-        (user-error "%s" (string-trim (buffer-string))))
-      (buffer-string))))
+carrying what the program said about it.
+
+With the caller's environment and `exec-path', read before the buffer
+holding the output is made current: where they are buffer-local -- envrc
+makes them so in a direnv project -- that buffer would see only the global
+ones, and a session started from such a buffer was given Emacs's global
+environment rather than the project's, without the terminal settings
+`cooked-host-start' binds."
+  (let ((environment process-environment)
+        (path exec-path))
+    (with-temp-buffer
+      (let* ((exec-path path)
+             (process-environment
+              (cons (concat "COOKED_HOST_DIR=" (directory-file-name (cooked-host--directory)))
+                    environment))
+             (status (if input
+                         (progn (insert input)
+                                (apply #'call-process-region (point-min) (point-max)
+                                       (cooked-host--program) t t nil arguments))
+                       (apply #'call-process (cooked-host--program) nil t nil arguments))))
+        (unless (eql status 0)
+          (user-error "%s" (string-trim (buffer-string))))
+        (buffer-string)))))
 
 (defun cooked-host-sessions ()
   "Every hosted session, as a list of alists.
