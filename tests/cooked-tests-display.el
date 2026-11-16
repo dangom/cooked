@@ -422,6 +422,26 @@ refresh -- deferred, because this hook runs inside redisplay."
           (should refreshed))))
     (kill-buffer "*cooked-tests-elsewhere*")))
 
+(ert-deftest cooked-the-selection-hook-is-handed-a-window ()
+  "Regression: the hook is buffer-local, and so is called with the window rather
+than the frame; taken for a frame, `display-graphic-p' signalled on it and the
+keymap went unrefreshed."
+  (with-temp-buffer
+    (cooked-mode)
+    (cooked-tests--display-buffer)
+    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+      (cooked--state-keymap nil 'raw))
+    (let ((real (symbol-function 'display-graphic-p))
+          deferred)
+      (cl-letf (((symbol-function 'cooked--defer) (lambda (f) (setq deferred f)))
+                ((symbol-function 'display-graphic-p)
+                 (lambda (&optional display)
+                   (when (windowp display)
+                     (funcall real display))   ; signals, as Emacs does
+                   t)))
+        (cooked--window-selection-changed (get-buffer-window))
+        (should deferred)))))
+
 (ert-deftest cooked-a-bookmark-records-where-the-shell-was ()
   "A position cannot be what a bookmark into a terminal means: the buffer is
 transient, the child does not outlive Emacs, and the row it was set on has

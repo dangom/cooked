@@ -143,6 +143,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 - The checkout not being found, and so the native module, terminfo and shell
   integration not being found, when cooked is installed by straight or elpaca and
   loaded compiled.
+- A hosted session started from a buffer with an environment of its own, as
+  envrc gives one in a direnv project, getting Emacs's global environment
+  instead: without the project's variables or the terminal's own settings.
+- The keymap not being refreshed, and an error logged, when a cooked buffer was
+  selected in another frame: the selection hook took the window it is handed
+  for a frame.
 
 ### Security
 
