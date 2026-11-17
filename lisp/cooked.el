@@ -1370,6 +1370,10 @@ that one glyph kind, exactly as a live row rendered without a known origin does.
       (let ((start (cooked--render-block block nil cooked--scrollback-props t)))
         ;; One search over the batch, which for a flood of plain text finds
         ;; nothing and costs about what the insertion did.
+        ;; Back to the end of what went in, from the text rather than from
+        ;; wherever dressing it left point: the marker below is set from here,
+        ;; and a marker set anywhere else strands the screen above it.
+        (goto-char (+ start (length (car block))))
         (when (cooked--cell-fit-p)
           (cooked--fit-cells start (point)))
         ;; Neither link pass runs here.  Both are `cooked--fontify-region''s
@@ -2009,7 +2013,7 @@ proportional face is wider than the grid assumed, exactly as a mismeasured wide
 character is, and it is the case vterm's README warns about.  It survives here
 as a real answer instead of a blanket assumption."
   (or (not (display-graphic-p (window-frame window)))
-      (let ((cell (window-font-width window))
+      (let ((cell (cooked--window-font-width window))
             (chars (length cooked--fixed-pitch-probe)))
         (and (> cell 0)
              (cl-every
@@ -2773,7 +2777,7 @@ what counts as narrowest had two places to land and only ever reached one."
   (let ((windows (cooked--content-windows)))
     (if-let* ((layout (cooked--layout-window)))
         (cons (max 1 (apply #'min (mapcar #'cooked--window-rows windows)))
-              (max 1 (window-max-chars-per-line layout)))
+              (max 1 (cooked--window-max-chars layout)))
       (cons cooked--rows cooked--cols))))
 
 (defun cooked--window-rows (window)
@@ -2834,8 +2838,8 @@ which is the ordinary case and stays free."
   (let (narrowest width)
     (dolist (window (cooked--content-windows) narrowest)
       (cond ((null narrowest) (setq narrowest window))
-            (t (unless width (setq width (window-max-chars-per-line narrowest)))
-               (let ((chars (window-max-chars-per-line window)))
+            (t (unless width (setq width (cooked--window-max-chars narrowest)))
+               (let ((chars (cooked--window-max-chars window)))
                  (when (< chars width)
                    (setq narrowest window width chars))))))))
 

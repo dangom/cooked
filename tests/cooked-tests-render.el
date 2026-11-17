@@ -1651,6 +1651,34 @@ was bounded behind itself, signalled, and the drain failed."
       (should fitted)
       (should-not cooked-last-failure))))
 
+(ert-deftest cooked-measuring-a-window-does-not-move-the-render ()
+  "Regression: a row of block glyphs asks the window for its font width, and
+`window-font-width' answers from inside `with-selected-window' -- which, when
+the selected window shows another buffer, leaves this one's point at its
+window's point.  `cooked--render-scrolled' then set the screen's start from
+there, below a screenful it never rewrote, and the transcript kept it twice."
+  (let ((other (generate-new-buffer " *elsewhere*"))
+        (config (current-window-configuration)))
+    (unwind-protect
+        (cooked-tests--with-session
+            '("/bin/sh" "-c"
+              "printf '\\342\\226\\220\\342\\226\\233 logo\\n'; sleep 0.3; i=0; while [ $i -lt 60 ]; do i=$((i+1)); echo line$i; if [ $((i % 7)) = 0 ]; then sleep 0.05; fi; done; printf done; sleep 30")
+          (let ((shown (split-window)))
+            (set-window-buffer shown (current-buffer))
+            ;; The user is working beside the terminal, not in it.
+            (set-window-buffer (selected-window) other)
+            (cl-letf (((symbol-function 'image-type-available-p) (lambda (&rest _) t))
+                      ((symbol-function 'cooked--apply-glyph-deco) #'ignore))
+              (should (cooked-tests--settle
+                       (lambda () (string-suffix-p "done" (cooked-tests--text))))))
+            (should (equal (cooked-tests--text)
+                           (concat "▐▛ logo\n"
+                                   (mapconcat (lambda (i) (format "line%d\n" i))
+                                              (number-sequence 1 60) "")
+                                   "done")))))
+      (set-window-configuration config)
+      (kill-buffer other))))
+
 (ert-deftest cooked-a-still-render-at-a-prompt-holds-the-view-but-not-the-line ()
   "The three axes come apart at a prompt.
 

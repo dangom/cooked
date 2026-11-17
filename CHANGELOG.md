@@ -153,6 +153,9 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   for a frame.
 - A drain failing with "Invalid search bound" while fitting wide glyphs to their
   cells, when point was left on a row above the one just written.
+- A screenful of output kept twice in the scrollback when a row of block
+  glyphs, such as a program's logo, arrived while another buffer's window was
+  selected.
 
 ### Security
 

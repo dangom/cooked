@@ -425,7 +425,7 @@ the keyboard.  Neither has a command line worth pinning."
            (command (cooked--sticky-command window))
            (input (and command (cooked-command-input command))))
       (if (and input (not (string-empty-p input)))
-          (propertize (cooked--sticky-label input (window-max-chars-per-line window))
+          (propertize (cooked--sticky-label input (cooked--window-max-chars window))
                       'face 'cooked-sticky-header)
         ""))))
 

@@ -254,7 +254,7 @@ the reason `cooked--window-rows' already gives: the line box is what a row
 actually occupies and includes `line-spacing', while the font height does not.
 This is the cell; a box glyph is drawn `line-spacing' shorter than it, because
 Emacs adds the spacing under an image too -- see `cooked--extra-line-spacing'."
-  (cons (window-font-width window 'default)
+  (cons (cooked--window-font-width window 'default)
         (window-default-line-height window)))
 
 (defun cooked--deco-cell-size ()

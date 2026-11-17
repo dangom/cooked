@@ -223,6 +223,28 @@ being gone by the time it is reached is ordinary rather than exceptional."
      (when (window-live-p ,var)
        ,@body)))
 
+;;;; Measuring a window without being moved by it
+;;
+;; `window-font-width' and `window-max-chars-per-line' do their measuring inside
+;; `with-selected-window'.  Selecting a window makes its buffer current *at that
+;; window's point*, and coming back restores only which buffer is current -- so when
+;; the selected window shows some other buffer, which is whenever the user is working
+;; beside a terminal rather than in it, asking either question of a window on this
+;; buffer leaves point at that window's point.  The render asks while it is halfway
+;; through writing rows, and reads point afterwards to learn where its own insertion
+;; ended: `cooked--render-scrolled' put `cooked--screen-start' there, below a
+;; screenful it then never rewrote, and the transcript kept that screen twice.
+;;
+;; Everything in cooked asks through these two.
+
+(defun cooked--window-font-width (window &optional face)
+  "`window-font-width' of WINDOW and FACE, leaving point where it was."
+  (save-excursion (window-font-width window face)))
+
+(defun cooked--window-max-chars (window)
+  "`window-max-chars-per-line' of WINDOW, leaving point where it was."
+  (save-excursion (window-max-chars-per-line window)))
+
 ;;;; Reading the packed records the native core sends
 ;;
 ;; Three of the drain's fields arrive as unibyte strings of fixed-width little-endian

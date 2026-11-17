@@ -318,7 +318,7 @@ every click on row 0 to the right of where it was made."
     (if-let* ((window (posn-window posn))
               ((windowp window))
               (xy (posn-x-y posn))
-              (width (window-font-width window))
+              (width (cooked--window-font-width window))
               ((> width 0)))
         ;; The column from where the pointer is rather than from what text is
         ;; under it.  `posn-point' answers with the nearest character, so a

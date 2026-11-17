@@ -253,7 +253,7 @@ than ever, since a real tty is precisely what makes git reach for `less'."
   (cons cooked-process-rows
         (or cooked-process-columns
             (when-let* ((window (get-buffer-window buffer t)))
-              (window-max-chars-per-line window))
+              (cooked--window-max-chars window))
             80)))
 
 (defun cooked-process-start (name buffer argv &optional directory)
