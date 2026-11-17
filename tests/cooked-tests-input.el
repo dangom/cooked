@@ -370,9 +370,11 @@ result land where it can be seen."
     (should-not (cooked--suspended-p))))
 
 (defun cooked-tests--stopped-p (pid)
-  "Whether PID is a stopped job -- `T\=' in the state `ps\=' reports for it."
-  (string-prefix-p "T" (string-trim
-                        (shell-command-to-string (format "ps -o stat= -p %s" pid)))))
+  "Whether PID is a stopped job -- `T\=' in the state the system reports for it.
+Read with `process-attributes' rather than `ps': on macOS `ps' is setuid root,
+and a process tree that may not run setuid binaries -- a sandboxed agent's --
+gets no answer from it, so the job looked never to stop."
+  (string-prefix-p "T" (or (alist-get 'state (process-attributes pid)) "")))
 
 (defun cooked-tests--foreground-job ()
   "The foreground pid once it is something other than the shell itself."
