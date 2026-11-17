@@ -151,6 +151,8 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 - The keymap not being refreshed, and an error logged, when a cooked buffer was
   selected in another frame: the selection hook took the window it is handed
   for a frame.
+- A drain failing with "Invalid search bound" while fitting wide glyphs to their
+  cells, when point was left on a row above the one just written.
 
 ### Security
 

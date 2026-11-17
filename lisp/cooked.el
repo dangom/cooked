@@ -2449,10 +2449,14 @@ is taken as covered: a default font without it is not one anybody types at.
 A character that already carries a `display' property is left alone -- that is
 a box glyph or a picture, and has been given its cell by other means -- and so
 is one in a cluster, since a property on part of an emoji sequence would stop
-the sequence composing into one glyph."
+the sequence composing into one glyph.
+
+Point is kept to the region however the measuring leaves it: a search bounded
+behind point signals, and here that ended a drain."
   (save-excursion
     (goto-char beg)
-    (while (re-search-forward "[^\0-ÿ]" end t)
+    (while (and (< (point) end)
+                (re-search-forward "[^\0-ÿ]" end t))
       (let* ((pos (1- (point)))
              (char (char-after pos)))
         (unless (or (get-text-property pos 'display)
@@ -2465,7 +2469,8 @@ the sequence composing into one glyph."
           (let ((fit (gethash char cooked--cell-fit-cache)))
             (unless fit
               (setq fit (puthash char
-                                 (save-match-data (cooked--measure-cell-fit char))
+                                 (save-match-data
+                                   (save-excursion (cooked--measure-cell-fit char)))
                                  cooked--cell-fit-cache)))
             (when (consp fit)
               ;; A copy each time, and that matters: `min-width' applies to a
@@ -2568,8 +2573,12 @@ which has no such seam at all."
                 last-start start)
           (cooked--render-block block index)
           ;; Before the guard, which measures the row as it will be drawn.
+          ;; To the end of the text just inserted, counted from where it went in
+          ;; rather than read off point: point was found, at least once, on
+          ;; a row above this one by now, and a search bounded by the end of
+          ;; *that* line signalled and took the drain with it.
           (when (and fit (not (nth 5 block)))
-            (cooked--fit-cells start (line-end-position)))
+            (cooked--fit-cells start (+ start (length (car block)))))
           ;; The block's own last two elements: how many cells the row occupies
           ;; on the grid, and whether every character of it takes one byte and
           ;; stands on one cell.  Both are by-products of the core building the

@@ -1627,6 +1627,30 @@ was given a bound on the wrong side of point are gone."
                                      m))
                         messages)))))
 
+(ert-deftest cooked-fitting-glyphs-does-not-hang-on-where-point-was-left ()
+  "Regression: the glyphs of a row were fitted up to the end of whatever line
+point was on after the row went in.  Point found on a row above it, the search
+was bounded behind itself, signalled, and the drain failed."
+  (skip-unless (fboundp 'handler-bind))
+  (cooked-tests--with-session '("/bin/cat")
+    (should (cooked-tests--settle (lambda () cooked--session)))
+    (let ((cooked-debug nil)
+          (cooked-last-failure nil)
+          (fitted nil))
+      (cl-letf* ((render (symbol-function 'cooked--render-block))
+                 ((symbol-function 'cooked--render-block)
+                  (lambda (&rest args)
+                    (prog1 (apply render args)
+                      (goto-char (point-min)))))
+                 ((symbol-function 'cooked--cell-fit-p) (lambda () t))
+                 ((symbol-function 'cooked--measure-cell-fit)
+                  (lambda (_char) (setq fitted t) t)))
+        (cooked--send cooked--session "tick ✓ done\n")
+        (should (cooked-tests--settle
+                 (lambda () (string-match-p "tick ✓ done" (cooked-tests--text))))))
+      (should fitted)
+      (should-not cooked-last-failure))))
+
 (ert-deftest cooked-a-still-render-at-a-prompt-holds-the-view-but-not-the-line ()
   "The three axes come apart at a prompt.
 
