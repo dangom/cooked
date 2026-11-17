@@ -1516,6 +1516,57 @@ global one, so the dock's post-command is buffer-local at depth 60, after naviga
 As a global hook it ran first, and navigate then read the switch between the dock and the
 window above it as a scroll and undid it.
 
+## cooked-program-line.el: the program's echo says whether it is reading a line
+
+The goal is Emacs editing -- motion, the region, kill and yank -- on the line a program
+that reads raw keys is typing into: an agent's chat, a REPL. Three shapes were weighed:
+
+- **Keep the line in the program, move its cursor to follow point.** Arrow keys sent to
+  the program, deletions sent as Backspaces. Every step depends on the screen being an
+  exact picture of the program's buffer: where the input starts and ends across rows,
+  how wide characters and wrapping map back onto the program's own positions. A redraw
+  of the input box in some later version breaks it.
+- **Open the line in a file** (`$EDITOR` through the program's own key). Robust, but
+  not editing in place.
+- **Emacs owns the line, the program gets it whole.** What was built. It is how cooked
+  already treats a shell's prompt (`cooked-shell-line-editor`), and how `term.el`'s line
+  mode works: Emacs holds the text, the program receives one bracketed paste and an Enter.
+  Nothing is synchronised while the line is edited, because the program's own line is
+  empty the whole time.
+
+The hard part is the question the shell answers with OSC 133 and a program never does:
+*is it reading a line right now?* Claude Code (2.1.322, probed in tmux) hides the terminal
+cursor in its text box and in its menus alike, changes no terminal mode when a menu opens,
+and takes `1`, `y`, `s` and the arrows as answers there. Its cursor sits at the caret in
+the text box and on the highlighted option in a menu, so nothing in the terminal state
+tells the two apart.
+
+The program's echo does. The first character typed into an empty line is sent as always;
+`cooked-program-line--observe` notes the cursor's column *before* it, which is still
+current because no drain runs inside a command. After each drain
+(`cooked-drain-functions`), the line counts as echoed if the cursor has moved right by
+exactly the characters' width *and* those characters are the text just behind it. A menu
+that ignores the key moves nothing. One that acts on it and redraws can put its cursor
+anywhere, but not with the key right behind it. Keys typed before the echo arrives go to
+the program too and are counted in, so nothing is queued or reordered. Echoed, the program
+is sent that many Backspaces and the echo already on screen becomes the input region.
+Nothing moves, because the next drain lifts the region out and puts it back at the cursor
+the Backspaces left, which is the same cell. mosh confirms its predicted echo the same way.
+
+`cooked--program-line` is honoured by `cooked--policy` only over a `raw` or `command`
+answer from `cooked--child-policy`, so a program that takes the alternate screen, reads a
+password or exits ends the claim even if nothing has cleared it yet. Navigation and the
+dock ask `cooked--child-policy`: a program whose line Emacs owns is still a program drawing
+on the main screen, and its output is still read and docked the same way.
+
+Enter is the dangerous key: a program that puts a permission question up while a message
+is being written would read the Enter meant for the message as an answer. So `RET` sends
+the paste alone, and Enter only once the program's cursor has moved, which is the program
+taking the paste. A menu ignores a paste, the cursor stays put, and after
+`cooked-program-line-accept-timeout` the line goes to the kill ring with no Enter sent.
+What this cannot rule out is a menu appearing in the few milliseconds between the paste
+landing and the Enter, the same race a terminal has when Enter is pressed as a menu opens.
+
 ## Inline programs keep their height when the window shrinks
 
 Copies of an agent's conversation -- its banner, the border of its input box, a prompt --

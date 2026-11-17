@@ -59,8 +59,11 @@
 (declare-function cooked-previous-input "cooked-mode")
 (declare-function cooked-next-input "cooked-mode")
 (declare-function cooked-beginning-of-line "cooked-mode")
+(declare-function cooked-end-of-line "cooked-mode")
+(declare-function cooked-kill-line "cooked-mode")
 (declare-function cooked-end-of-buffer "cooked-mode")
 (declare-function cooked-recenter-top-bottom "cooked-mode")
+(declare-function cooked-program-line--hand-over "cooked-program-line" ())
 
 ;;;; Key encoding
 
@@ -1325,10 +1328,14 @@ child that wants one of those keys for itself -- a readline-based REPL's own
 
 Bound on `cooked-mode-map', so it also reaches the child while peeking -- ending
 peek first, so the result is seen immediately -- but refuses once Emacs owns
-the line -- see `cooked-send-string', which shares the reasoning."
+the line -- see `cooked-send-string', which shares the reasoning.
+
+Except over a program's line that Emacs took (see `cooked-program-line-editor'):
+the program is still reading keys there, and this is how one of its own reaches
+it -- a key that toggles a view, say -- without disturbing the line."
   (interactive)
   (cooked--resume-forwarding)
-  (when (cooked--input-state-p)
+  (when (and (cooked--input-state-p) (not cooked--program-line))
     (user-error "Emacs already owns the line; type directly instead"))
   (let* ((cooked--keys (or (cooked--assumed-key-protocol) cooked--keys))
          (bytes (cooked--encode-event (read-key "Send key: "))))
@@ -1358,6 +1365,10 @@ than to `completion-at-point\='."
     ;; the child is being forwarded through -- `C-a' there is readline's own
     ;; start-of-line, or tmux's prefix, and it must arrive untouched.
     (define-key map [remap move-beginning-of-line] #'cooked-beginning-of-line)
+    ;; And the other end of the line, which is not always the end of the row: a
+    ;; right prompt, or what a program draws after its cursor, can follow it.
+    (define-key map [remap move-end-of-line] #'cooked-end-of-line)
+    (define-key map [remap kill-line] #'cooked-kill-line)
     ;; Likewise for the end of the buffer, which below the prompt is the blank
     ;; rows of a screen nothing has been written to yet.
     (define-key map [remap end-of-buffer] #'cooked-end-of-buffer)
@@ -1405,17 +1416,28 @@ The *whole* line is sent, not the part before point.  Sending the prefix would
 silently drop whatever followed the cursor, and the left-arrows that avoid it
 cost one byte each.
 
-Then KEY, once the shell\='s cursor is back where the user\='s was."
+Then KEY, once the shell\='s cursor is back where the user\='s was.
+
+A program\='s line that Emacs took over (see `cooked-program-line-editor\=') is
+handed back the same way, as a paste when the program reads pastes: that is
+what keeps a newline in it from reaching the program as an Enter."
   (unless (cooked--input-state-p)
     (user-error "The child already owns the line"))
   (pcase-let* ((`(,start . ,end) (cooked--input-region))
                (text (buffer-substring-no-properties start end))
-               (after (- end (max start (min (point) end)))))
+               (after (- end (max start (min (point) end))))
+               (program cooked--program-line))
     (cooked--clear-input-region)
-    (setq cooked--delegated t)
+    (if program
+        (cooked-program-line--hand-over)
+      (setq cooked--delegated t))
     (cooked--refresh-keymap)
     (cooked--send-to-child
-     (concat text (apply #'concat (make-list after (cooked--csi "D"))) key))))
+     (concat (if (and program (cooked--bracketed-paste-p cooked--session))
+                 (cooked--bracketed-paste text)
+               text)
+             (apply #'concat (make-list after (cooked--csi "D")))
+             key))))
 
 (defun cooked-delegate-this-key ()
   "Delegate the pending input and send the key that invoked this command.

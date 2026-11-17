@@ -371,7 +371,10 @@ clicked."
       (when-let* (((cooked--dock-window-p window))
                   (main (cooked-dock--main window))
                   ((memq this-command '(cooked-send-key
-                                        cooked--peek-resume-and-send)))
+                                        cooked--peek-resume-and-send
+                                        ;; A line Emacs owns: see
+                                        ;; `cooked-program-line-editor'.
+                                        cooked-send-input)))
                   ((member (this-command-keys-vector) '([13] [return]))))
         (with-current-buffer (window-buffer window)
           (cooked-dock--attach main))))))

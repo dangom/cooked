@@ -34,6 +34,7 @@
 (require 'cooked-navigate)
 (require 'cooked-dnd)
 (require 'cooked-dock)
+(require 'cooked-program-line)
 (require 'cooked-completion)
 (require 'cooked-mouse)
 (require 'cooked-shell-integration)
@@ -449,8 +450,17 @@ The kernel echoes it back, so the emulator renders the line, not us.
 Enter is sent as CR, which is what a terminal actually transmits: in canonical
 mode `ICRNL' turns it into the newline the child expects, and in raw mode it is
 what a shell's line editor is bound to.  Sending LF works for readline but not
-for ZLE."
+for ZLE.
+
+A program's line that Emacs took over (see `cooked-program-line-editor') is
+handed back whole instead, by `cooked-program-line-submit'."
   (interactive)
+  (if cooked--program-line
+      (cooked-program-line-submit)
+    (cooked--submit-line)))
+
+(defun cooked--submit-line ()
+  "Submit the pending input as a line the child's tty or line editor reads."
   (let ((text (or (cooked--pending-input) "")))
     ;; The text is left in the buffer rather than deleted, and that is the whole
     ;; of the fix for a flicker on Enter: deleting it emptied the line here and
@@ -1351,7 +1361,7 @@ program at once."
 
 (defun cooked--inline-program-p ()
   "Whether a program is drawing inline: owns the keyboard, not full screen."
-  (and (not cooked--alt) (memq (cooked--policy) '(raw command))))
+  (and (not cooked--alt) (memq (cooked--child-policy) '(raw command))))
 
 (defun cooked--hold-width-p (cols)
   "Whether a change to COLS columns should wait to settle; arm the wait if so."
@@ -2708,6 +2718,48 @@ replaces."
     (if (and start (> (point) start))
         (goto-char start)
       (move-beginning-of-line n))))
+
+(defun cooked--input-line-end ()
+  "Where the pending input ends, if point is in it and on the line it ends on.
+
+The mirror of `cooked--input-line-start\='.  The row the input ends on need not
+end with it: whatever the child drew after its cursor -- a right-hand prompt, a
+suggestion, a program\='s own picture of its empty input -- is still on the row,
+read-only, past the input\='s end."
+  (when (cooked--input-state-p)
+    (when-let* ((region (cooked--input-region))
+                (end (cdr region)))
+      (and (<= (car region) (point) end)
+           (<= (line-beginning-position) end (line-end-position))
+           end))))
+
+(defun cooked-end-of-line (&optional n)
+  "Move point to the end of the command being typed, not of the row.
+
+What the child drew after its cursor stays on the input\='s last row, and
+`move-end-of-line\=' would land past it, in text that cannot be typed into.
+With N, or from the input end already, this is `move-end-of-line\=', so a second
+press goes on to the end of the row the way a second
+\\[cooked-beginning-of-line] goes on to column 0."
+  (interactive "^p")
+  (let ((end (and (eql (or n 1) 1) (cooked--input-line-end))))
+    (if (and end (< (point) end))
+        (goto-char end)
+      (move-end-of-line n))))
+
+(defun cooked-kill-line (&optional arg)
+  "Kill the rest of the line being typed, as `kill-line\=' does.
+
+Kept to the pending input where the row goes on past it: `kill-line\=' would
+take the child\='s read-only text after the cursor with it, and refuse.  With
+ARG, or anywhere the row ends with the input, this is `kill-line\='."
+  (interactive "P")
+  (let ((end (and (null arg) (cooked--input-line-end))))
+    (if (and end (> (line-end-position) end))
+        (if (< (point) end)
+            (kill-region (point) end)
+          (signal 'end-of-buffer nil))
+      (kill-line arg))))
 
 (defun cooked-end-of-buffer (&optional arg)
   "Move point to the end of the command being typed, not of the screen.

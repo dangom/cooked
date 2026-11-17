@@ -485,6 +485,27 @@ terminal. While docked:
 Which rows are live is decided from the terminal alone: the cursor's row, everything
 below it, and ~cooked-dock-context-rows~ above it. ~cooked-dock~ turns it off.
 
+*Editing the program's line in Emacs.* Set ~cooked-program-line-editor~ to ~emacs~ and
+the line you type into a program becomes an Emacs line, edited the way a shell prompt
+is in cooked: motion, =C-SPC= and the region, expand-region, kill and yank, =M-p= / =M-n=
+history, =S-RET= for a newline. =RET= hands the whole line to the program as one paste,
+then sends Enter.
+
+- *How Emacs knows it is a line.* Nothing on screen says so, and the same program asks
+  questions with menus whose keys are answers, not text. So the first character you type
+  into an empty line goes to the program as usual. If the program echoes it at its
+  cursor, Emacs takes the line: the program is sent a Backspace for it and the character
+  stays on screen as the start of the Emacs line. A menu does not echo, so =1=, =y= and
+  the arrows keep doing what they do there.
+- *What stays the program's.* =/=, =@= and =!= typed into an empty line leave the line to
+  the program, so an agent's command menu, file picker and shell mode work as usual
+  (~cooked-program-line-delegate-characters~). Escape and Shift-Tab reach the program while
+  Emacs keeps the line (~cooked-program-line-pass-keys~); =C-c C-q= sends any other key.
+  An empty line belongs to the program, so every key at it is the program's.
+- *Safe Enter.* Enter is sent only once the program has visibly taken the paste. If it
+  has put a question up meanwhile, nothing answers it: the line goes to the kill ring.
+  So does a line the program walks away from by taking the alternate screen or exiting.
+
 The program is left entirely to itself: cooked sets nothing in its environment, so its
 settings, memory and updates behave exactly as in any terminal. Many agent CLIs offer
 both an inline renderer and a fullscreen one, chosen in their own settings:

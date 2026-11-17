@@ -547,6 +547,18 @@ The ghost keeps the way back visible; `cooked--snap-to-cursor' takes it."
   "Run in the buffer after each drain has scrolled its windows.
 cooked-dock.el keeps its docks pinned from here.")
 
+(defvar cooked-drain-functions nil
+  "Abnormal hook run in the session's buffer once each drain is fully applied.
+
+Called with no arguments, after the render, the events, point and the windows
+have all settled -- so `cooked--cursor' and the buffer agree, and what an entry
+sees is what the user is about to see.  For a layer that waits on the child's
+answer to something it sent: cooked-program-line.el watches here for a program
+to echo the keys it was given.
+
+Run through `cooked--run-seam', so an entry that signals is reported and does
+not take the drain with it.")
+
 (defun cooked--restore-scroll-settings ()
   "Put back the scroll settings `cooked-mode' gave this buffer, if they moved.
 
@@ -877,6 +889,10 @@ and the region shaped before anything measures it."
     ;; After the window block, not before it: see `cooked--sync-cursor-type'.
     (cooked--sync-cursor-type)
     (cooked--update-ghost-cursor)
+    ;; Last before an exit is handled: everything above has settled, so a
+    ;; function here sees the buffer, the cursor and point as this drain left
+    ;; them.
+    (cooked--run-seam 'cooked-drain-functions)
     (when cooked--exit (cooked--on-exit cooked--exit)))
   ;; Both outside the `let*', and in this order.  The binding above is what kept
   ;; this drain out of the undo history, and a discard has to reach the buffer's

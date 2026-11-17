@@ -39,6 +39,17 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   underneath, so a reply can be typed while the history is read. Scrolling back
   down, moving onto the live rows or submitting with `RET` joins them again.
   See `cooked-dock`, `cooked-dock-context-rows` and `cooked-dock-max-fraction`.
+- `cooked-program-line-editor`: set to `emacs` to edit a navigable program's
+  input line with Emacs commands (motion, the mark and region, kill and yank,
+  `M-p` history, `S-RET` for a newline). The first character typed into an
+  empty line goes to the program; if the program echoes it, Emacs takes the
+  line, and `RET` hands it back as one bracketed paste followed by Enter. A
+  menu does not echo, so its keys stay the program's. Characters in
+  `cooked-program-line-delegate-characters` (`/`, `@`, `!`) leave the line with
+  the program, and `cooked-program-line-pass-keys` (Escape, Shift-Tab) reach it
+  while Emacs keeps the line. Off by default.
+- `cooked-drain-functions`, run once each drain is applied, for packages that
+  wait on the child's answer to something they sent.
 - A hosted program is told its session's name in `COOKED_HOST_SESSION` and
   where the host program is in `COOKED_HOST`, and `cooked-host-attach-hook`
   runs in a buffer attached to a session.
@@ -112,6 +123,10 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   rebuilt locally when it is not usable.
 - A no-break space is drawn as a plain space rather than with Emacs'
   `nobreak-space` underline.
+- `C-e` and `C-k` at a prompt stop at the end of the line being typed when the
+  row goes on past it (a right-hand prompt, or what a program drew after its
+  cursor). A second `C-e` goes on to the end of the row, as a second `C-a`
+  goes to column 0.
 
 ### Fixed
 

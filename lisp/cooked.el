@@ -741,8 +741,29 @@ Pruned in `cooked--render-scrolled', where entries stop being reachable: a mark
 below `cooked--screen-start' is in settled text the emulator will never speak
 about again.")
 
+(defvar-local cooked--program-line nil
+  "Whether Emacs owns the line a program that reads raw keys is typing into.
+
+Set by cooked-program-line.el, and only ever while the program itself still
+owns the keyboard: `cooked--policy' honours it over a `raw' or `command'
+answer from `cooked--child-policy' and over nothing else, so a program that
+takes the alternate screen, reads a password or exits ends the claim without
+anyone having to clear it first.  See `cooked-program-line-editor'.")
+
 (defun cooked--policy ()
-  "How the buffer should behave right now.
+  "How the buffer should behave right now: who owns the keyboard.
+
+What `cooked--child-policy' says the child is doing, except where Emacs has
+taken a raw-reading program's line for itself -- see `cooked--program-line'.
+There the answer is `cooked': the line is edited as a prompt's is, and the
+program is handed it whole on RET."
+  (let ((child (cooked--child-policy)))
+    (if (and cooked--program-line (memq child '(raw command)))
+        'cooked
+      child)))
+
+(defun cooked--child-policy ()
+  "What the child is doing, as far as the keyboard is concerned.
 
 One of `cooked\=', `prompt\=', `command\=', `raw\=' or `alt\='.
 

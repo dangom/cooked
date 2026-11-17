@@ -20,6 +20,7 @@
 ;;   cooked-tests-annotate.el    clickable notes on stretches of output
 ;;   cooked-tests-popup.el       a look at a buffer or a file in a frame
 ;;   cooked-tests-run.el         following a command a program runs out of sight
+;;   cooked-tests-program-line.el  Emacs editing the line a program reads
 ;;   cooked-tests-menu.el        the menu, and the commands it names
 ;;   cooked-tests-display.el     where a session lands, and the Emacs
 ;;                               subsystems `cooked-mode' answers for
@@ -72,6 +73,7 @@
 (require 'cooked-tests-navigate)
 (require 'cooked-tests-annotate)
 (require 'cooked-tests-dock)
+(require 'cooked-tests-program-line)
 (require 'cooked-tests-popup)
 (require 'cooked-tests-run)
 (require 'cooked-tests-resize)

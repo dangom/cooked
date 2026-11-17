@@ -188,7 +188,10 @@ Terminal state only: a live child that owns the keyboard, on the main screen,
 that has not asked for mouse reports."
   (and cooked--session
        (not cooked--alt)
-       (memq (cooked--policy)
+       ;; The child's own state, not who owns the keyboard: a program whose line
+       ;; Emacs is editing is still a program drawing on the main screen, and
+       ;; its output is still read -- and docked -- the same way.
+       (memq (cooked--child-policy)
              (if (eq cooked-shell-line-editor 'shell)
                  '(raw command prompt)
                '(raw command)))
@@ -202,10 +205,16 @@ that has not asked for mouse reports."
     (cons (line-beginning-position) (line-end-position))))
 
 (defun cooked-navigate--at-input-p (&optional pos)
-  "Whether POS, default point, is in the child's input."
+  "Whether POS, default point, is in the child's input.
+
+The cursor's row, and all of a line Emacs owns for the program -- see
+`cooked-program-line-editor' -- which is not on one row once it has a newline
+in it."
   (let ((pos (or pos (point)))
-        (bounds (cooked-navigate--input-bounds)))
-    (<= (car bounds) pos (cdr bounds))))
+        (bounds (cooked-navigate--input-bounds))
+        (region (cooked--input-region)))
+    (or (<= (car bounds) pos (cdr bounds))
+        (and region (<= (car region) pos (cdr region))))))
 
 ;;;; The mode, and the maps
 
@@ -270,12 +279,14 @@ moves the vertical scroll many times before it moves the start at all."
                    (pos-visible-in-window-p cursor window)
                    (pos-visible-in-window-p (point-max) window))
               (setq cooked-navigate--reading nil)
-              (goto-char cursor))
+              (goto-char (cooked--point-after-input)))
              ;; Moved onto the input row: back to the program, at its cursor
-             ;; rather than wherever on the row the motion landed.
+             ;; rather than wherever on the row the motion landed.  A line Emacs
+             ;; owns is edited where point is, so there point stays.
              ((and moved (cooked-navigate--at-input-p))
               (setq cooked-navigate--reading nil)
-              (goto-char cursor)))
+              (unless (cooked--input-region)
+                (goto-char cursor))))
           (when (or
                  ;; Scrolled up off the bottom, even with point still in the
                  ;; input -- or live output would scroll the window straight back.
