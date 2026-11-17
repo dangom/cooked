@@ -47,7 +47,11 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   menu does not echo, so its keys stay the program's. Characters in
   `cooked-program-line-delegate-characters` (`/`, `@`, `!`) leave the line with
   the program, and `cooked-program-line-pass-keys` (Escape, Shift-Tab) reach it
-  while Emacs keeps the line. Off by default.
+  while Emacs keeps the line. What the program draws after its cursor (its own
+  cursor, a suggestion) is hidden while Emacs owns the line, every line command
+  stops at the line's edges, and the program's rows below it are read-only.
+  Shells and remote logins such as `ssh` are never taken, marked or not
+  (`cooked-program-line-shells`); a shell's line is `cooked-shell-line-editor`'s. Off by default.
 - `cooked-drain-functions`, run once each drain is applied, for packages that
   wait on the child's answer to something they sent.
 - A hosted program is told its session's name in `COOKED_HOST_SESSION` and
@@ -126,10 +130,13 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 - `C-e` and `C-k` at a prompt stop at the end of the line being typed when the
   row goes on past it (a right-hand prompt, or what a program drew after its
   cursor). A second `C-e` goes on to the end of the row, as a second `C-a`
-  goes to column 0.
+  goes to column 0. `C-k` at the end of the line no longer joins the screen
+  row below it.
 
 ### Fixed
 
+- Output arriving while a line was edited mid-way moved point to the end of the
+  line; it stays where it was.
 - Truecolor sequences swallowing the parameter after them.
 - DECSC/DECRC not saving and restoring the pen.
 - RIS leaving the alternate screen up.

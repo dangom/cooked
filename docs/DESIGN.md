@@ -1559,6 +1559,24 @@ password or exits ends the claim even if nothing has cleared it yet. Navigation 
 dock ask `cooked--child-policy`: a program whose line Emacs owns is still a program drawing
 on the main screen, and its output is still read and docked the same way.
 
+A line Emacs owns sits inside the program's own row: the prompt before it, and after it
+whatever the program draws for an empty line -- a cursor of its own, a suggestion -- with
+the program's rows below. The tail is hidden by an overlay, so there is one cursor and
+only the user's text. Line commands have to stop at the line's edges whoever wrote them
+(Doom binds `C-a` to its own command, which no remap of `move-beginning-of-line`
+reaches), so the edges are `field` boundaries, as comint's prompts are, and what follows
+the line is read-only. Fields change what `line-beginning-position` answers, which the
+renderer asks about every row, so they exist only for the length of a command:
+`cooked-program-line--fence` puts them up last on `pre-command-hook` and
+`cooked-program-line--unfence` takes them down first on `post-command-hook`, and
+`cooked--apply` binds `inhibit-field-text-motion` for a drain that runs inside one.
+
+Shells are excluded twice over. A shell keeping its own prompt (`cooked-shell-line-editor`
+`shell`) is `prompt` to `cooked--child-policy`, never `raw` or `command`; a shell without
+marks looks like any raw program and is named in `cooked-program-line-shells`, as are
+`ssh` and the other remote logins, whose foreground program is a shell elsewhere. Taking a
+shell's line would rub out what was typed into it with Backspaces.
+
 Enter is the dangerous key: a program that puts a permission question up while a message
 is being written would read the Enter meant for the message as an answer. So `RET` sends
 the paste alone, and Enter only once the program's cursor has moved, which is the program

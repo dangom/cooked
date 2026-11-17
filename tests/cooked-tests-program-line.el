@@ -74,7 +74,7 @@ line, and the program's own copy is rubbed out: RET submits them once."
     (should (cooked-tests--settle (lambda () cooked--program-line)))
     (should (eq (cooked--policy) 'cooked))
     (should (equal (cooked--pending-input) "hello"))
-    (should (string-match-p "\n> hello\\'" (cooked-tests--text)))
+    (should (string-search "\n> hello" (cooked-tests--text)))
     (cooked-tests--line-keys "RET")
     (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "hello"))))
     (should-not cooked--program-line)
@@ -120,6 +120,147 @@ the row, which goes on with the program's own cursor cell."
     ;; Killed to nothing: the line is the program's again.
     (should-not cooked--program-line)))
 
+;; The line's edges.
+
+(defun cooked-tests--visible (beg end)
+  "The text between BEG and END that is not invisible."
+  (let ((out ""))
+    (dotimes (i (- end beg))
+      (let ((pos (+ beg i)))
+        (unless (invisible-p pos)
+          (setq out (concat out (string (char-after pos)))))))
+    out))
+
+(ert-deftest cooked-program-line-hides-what-the-program-draws-after-it ()
+  "What the program draws after its cursor for an empty line -- its own cursor,
+a suggestion -- is not shown after the line Emacs owns: there is one cursor,
+and no text that is not the user's."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "h i")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    ;; The program's line is empty again, so it is drawing its suggestion.
+    (should (cooked-tests--settle
+             (lambda () (string-search "try me" (cooked-tests--text)))))
+    (let ((end (cdr (cooked--input-region))))
+      (should (equal (cooked-tests--visible (pos-bol) (pos-eol)) "> hi"))
+      (should (invisible-p end)))
+    ;; Typed at the end, the text is still the user's and still shown.
+    (cooked-tests--line-keys "C-e !")
+    (should (equal (cooked--pending-input) "hi!"))
+    (should (equal (cooked-tests--visible (pos-bol) (pos-eol)) "> hi!"))))
+
+(ert-deftest cooked-program-line-motion-stops-at-the-line ()
+  "Any command finding a line's beginning or end stops at the line Emacs owns,
+not only cooked's own: for the length of a command, the prompt before it and
+the program's text after it are fields of their own, as comint's prompts are."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "a b c")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (unwind-protect
+        (pcase-let ((`(,start . ,end) (cooked--input-region)))
+          ;; A package's own line commands, on keys nothing in cooked binds.
+          (global-set-key [f5] #'beginning-of-line)
+          (global-set-key [f6] #'end-of-line)
+          (goto-char (1+ start))
+          (execute-kbd-macro [f5])
+          (should (= (point) start))
+          (execute-kbd-macro [f6])
+          (should (= (point) end))
+          ;; And between commands, nothing of it is left on the screen.
+          (should-not (text-property-not-all (point-min) (point-max) 'field nil)))
+      (global-unset-key [f5])
+      (global-unset-key [f6]))))
+
+(ert-deftest cooked-program-line-keeps-point-through-a-redraw ()
+  "A program redrawing while its line is edited -- a status update, a spinner
+-- does not move point: editing at the start of the line stays there."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "a b c")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (cooked-tests--line-keys "C-a")
+    (should (= (point) (car (cooked--input-region))))
+    (cooked--send cooked--session "\C-b")
+    (cooked-tests--settle (lambda () nil) 0.3)
+    (should (= (point) (car (cooked--input-region))))
+    (cooked-tests--line-keys "x")
+    (should (equal (cooked--pending-input) "xabc"))))
+
+(ert-deftest cooked-program-line-keeps-kills-off-the-programs-rows ()
+  "\\`C-k' and \\`C-d' at the end of the line leave the program's rows below it
+alone."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "a b c")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (let ((below (buffer-substring-no-properties (cdr (cooked--input-region))
+                                                 (point-max))))
+      (cooked-tests--line-keys "C-e")
+      (should-error (execute-kbd-macro (kbd "C-k")))
+      (should-error (execute-kbd-macro (kbd "C-d")))
+      (should (equal (cooked--pending-input) "abc"))
+      (should (equal (buffer-substring-no-properties (cdr (cooked--input-region))
+                                                     (point-max))
+                     below))
+      (should (string-search "status row" below)))))
+
+;; Shells.
+
+(ert-deftest cooked-program-line-leaves-a-shell-its-own-line ()
+  "A shell that keeps its own prompt (`cooked-shell-line-editor' `shell') is not
+a program whose line Emacs takes: what is typed there stays the shell's, and is
+never rubbed out."
+  (let ((cooked-shell-line-editor 'shell)
+        (cooked-program-line-editor 'emacs))
+    (cooked-tests--with-shell ("zsh" :settle (lambda () (eq (cooked--policy) 'prompt)))
+      (switch-to-buffer (current-buffer))
+      (cooked--refresh-keymap)
+      (should cooked-navigate--applies)
+      (cooked-tests--line-keys "e c h o SPC h i")
+      (cooked-tests--settle (lambda () nil) cooked-program-line-echo-timeout)
+      (should-not cooked--program-line)
+      (should-not cooked-program-line--probe)
+      (should (string-search "echo hi" (cooked-tests--text)))
+      (cooked-tests--line-keys "RET")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "^hi$" (cooked-tests--text))))))))
+
+(ert-deftest cooked-program-line-leaves-zsh-completion-and-continuations-alone ()
+  "With zsh keeping its own line and program lines on, zsh is untouched: its own
+TAB completes, and a construct over several lines runs as one."
+  (let ((cooked-shell-line-editor 'shell)
+        (cooked-program-line-editor 'emacs))
+    (cooked-tests--with-shell ("zsh" :settle (lambda () (eq (cooked--policy) 'prompt)))
+      (switch-to-buffer (current-buffer))
+      (cooked--refresh-keymap)
+      ;; zsh's own completion of a command name.
+      (cooked-tests--line-keys "u n a m TAB")
+      (should (cooked-tests--settle
+               (lambda () (string-search "$ uname" (cooked-tests--text)))))
+      (cooked-tests--line-keys "C-u")
+      ;; A loop typed over three lines, each one zsh's.
+      (cooked-tests--line-keys "f o r SPC x SPC i n SPC a a SPC b b ; SPC d o RET")
+      (cooked-tests--line-keys "e c h o SPC x - $ x RET")
+      (cooked-tests--line-keys "d o n e RET")
+      (should (cooked-tests--settle
+               (lambda () (and (string-search "\nx-aa" (cooked-tests--text))
+                               (string-search "\nx-bb" (cooked-tests--text))))))
+      (should-not cooked--program-line)
+      (should-not cooked-program-line--probe))))
+
+(ert-deftest cooked-program-line-names-shells-without-marks ()
+  "A shell with no integration reads raw keys like any program; it is told
+apart by name."
+  (cl-letf (((symbol-function 'cooked--foreground-program) (lambda () "zsh")))
+    (should (cooked-program-line--shell-p)))
+  (cl-letf (((symbol-function 'cooked--foreground-program) (lambda () "bash")))
+    (should (cooked-program-line--shell-p)))
+  (cl-letf (((symbol-function 'cooked--foreground-program) (lambda () "agent")))
+    (should-not (cooked-program-line--shell-p)))
+  ;; A remote login is a shell on another machine.
+  (cl-letf (((symbol-function 'cooked--foreground-program) (lambda () "ssh")))
+    (should (cooked-program-line--shell-p)))
+  (cl-letf (((symbol-function 'cooked--foreground-program) (lambda () "python3")))
+    (should-not (cooked-program-line--shell-p))))
+
 (ert-deftest cooked-program-line-leaves-a-menu-its-keys ()
   "A program showing a menu does not echo, so its keys stay its own: `1'
 answers the menu, and Emacs takes nothing."
@@ -159,7 +300,7 @@ line keeps the line the program's until it ends."
     (cooked-tests--line-keys "/ m o")
     (cooked-tests--settle (lambda () nil) cooked-program-line-echo-timeout)
     (should-not cooked--program-line)
-    (should (string-match-p "\n> /mo\\'" (cooked-tests--text)))
+    (should (string-search "\n> /mo" (cooked-tests--text)))
     (cooked-tests--line-keys "RET")
     (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "/mo"))))
     ;; The line ended, and with it the delegation.

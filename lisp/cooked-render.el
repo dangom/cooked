@@ -780,7 +780,13 @@ and correcting for it once per drain is the oscillation itself."
 
 (defun cooked--scroll-transcript (viewport here others)
   "Scroll the transcript in HERE and OTHERS as VIEWPORT asks."
-  (let* ((target (cooked--point-after-input)))
+  (let* ((target (cooked--point-after-input))
+         ;; Where `cooked--place-point' put point in the window being typed in,
+         ;; which is not the end of the line when the user is editing mid-line:
+         ;; pinning the bottom moves the window, not the caret.  A child that
+         ;; redraws while the line is being edited -- a status row, a spinner --
+         ;; otherwise threw point to the end of the line on every drain.
+         (here-target (if (cooked-viewport-editing viewport) (point) target)))
     ;; Only while the view is following at all: suspending exists to stop the
     ;; child's output moving what is being read, and a second window on the same
     ;; buffer is being read on the same terms.
@@ -801,7 +807,8 @@ and correcting for it once per drain is the oscillation itself."
      ;; output and then repositioning is ordinary -- and it is that trailing
      ;; text, not the cursor, whose bottom edge decides the window's scroll.
      ((cooked-viewport-follow viewport)
-      (cooked--pin-transcript-bottom (append here others) target (point-max))))))
+      (cooked--pin-transcript-bottom here here-target (point-max))
+      (cooked--pin-transcript-bottom others target (point-max))))))
 
 (defun cooked--apply (update)
   "Apply UPDATE, the plist returned by `cooked--drain'.
@@ -822,6 +829,10 @@ and the region shaped before anything measures it."
   ;; long is not worth nesting one level deeper.
   (let* ((inhibit-read-only t)
          (buffer-undo-list t)
+         ;; Rows are rows: a `field' is an editing boundary, put up for the
+         ;; length of a command (see `cooked-program-line--fence'), and a drain
+         ;; that runs inside one must not find its line ends moved by it.
+         (inhibit-field-text-motion t)
          (viewport (cooked--capture-viewport))
          (pending (cooked--take-pending-input))
          ;; Where this drain's scrollback landed, for resolving a `scrolled'

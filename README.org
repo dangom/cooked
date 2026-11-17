@@ -501,7 +501,15 @@ then sends Enter.
   the program, so an agent's command menu, file picker and shell mode work as usual
   (~cooked-program-line-delegate-characters~). Escape and Shift-Tab reach the program while
   Emacs keeps the line (~cooked-program-line-pass-keys~); =C-c C-q= sends any other key.
-  An empty line belongs to the program, so every key at it is the program's.
+  An empty line belongs to the program, so every key at it is the program's. A shell is
+  never taken this way: whether Emacs edits a shell's prompt is ~cooked-shell-line-editor~'s
+  to say, and ~cooked-program-line-shells~ names the shells, =ssh= and the other remote
+  logins included.
+- *The line's edges.* Whatever the program draws after its cursor for an empty line --
+  its own cursor, a suggestion -- is hidden while Emacs owns the line, so there is one
+  cursor and only your text. Line commands stop at the line's edges, whichever package's
+  they are (the program's prompt and what follows the line are fields of their own, as in
+  comint), and the program's rows below the line cannot be killed or deleted.
 - *Safe Enter.* Enter is sent only once the program has visibly taken the paste. If it
   has put a question up meanwhile, nothing answers it: the line goes to the kill ring.
   So does a line the program walks away from by taking the alternate screen or exiting.

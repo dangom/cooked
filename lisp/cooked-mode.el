@@ -2750,15 +2750,17 @@ press goes on to the end of the row the way a second
 (defun cooked-kill-line (&optional arg)
   "Kill the rest of the line being typed, as `kill-line\=' does.
 
-Kept to the pending input where the row goes on past it: `kill-line\=' would
-take the child\='s read-only text after the cursor with it, and refuse.  With
-ARG, or anywhere the row ends with the input, this is `kill-line\='."
+`kill-line\=' kept to the pending input, as if it were the whole buffer: the
+rows after it are the child\='s screen, not more of what is being typed.  At
+the end of the input there is nothing left to kill, and this says so as
+`kill-line\=' does at the end of a buffer, rather than joining the row below.
+Outside the input, `kill-line\='."
   (interactive "P")
-  (let ((end (and (null arg) (cooked--input-line-end))))
-    (if (and end (> (line-end-position) end))
-        (if (< (point) end)
-            (kill-region (point) end)
-          (signal 'end-of-buffer nil))
+  (let ((region (and (cooked--input-state-p) (cooked--input-region))))
+    (if (and region (<= (car region) (point) (cdr region)))
+        (save-restriction
+          (narrow-to-region (car region) (cdr region))
+          (kill-line arg))
       (kill-line arg))))
 
 (defun cooked-end-of-buffer (&optional arg)

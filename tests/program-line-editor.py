@@ -4,8 +4,10 @@ For cooked-tests-program-line.el.  It echoes what it is typed, takes bracketed
 pastes, rubs out on Backspace, and reports the line on Enter.  `?' typed into an
 empty line opens a menu instead: `1' and `2' answer it and everything else -- a
 paste included -- is ignored, which is what makes it a menu.  Escape is
-reported, and C-a takes the alternate screen.  Like an agent, it draws a cursor
-of its own after the line, so its row goes on past where it reads.
+reported, C-a takes the alternate screen, and C-b redraws the prompt, as a status
+update would.  Like an agent, it draws a cursor
+of its own after the line, a suggestion after that while the line is empty, and
+a status row under it, so the screen goes on past where it reads.
 """
 
 import os
@@ -30,9 +32,12 @@ menu = False
 
 
 def prompt():
-    # A cursor of its own after the line, drawn in reverse video with the real
-    # one stepped back onto it -- as an agent with its own cursor does.
-    write('\r\x1b[K> ' + line.replace('\n', '|') + '\x1b[7m \x1b[0m\x1b[D')
+    # Like an agent: a cursor of its own after the line, drawn in reverse video,
+    # a suggestion after it while the line is empty, and a status row below.
+    shown = line.replace('\n', '|')
+    after = '\x1b[7m \x1b[0m' + ('' if shown else '\x1b[2mtry me\x1b[0m')
+    write('\r\x1b[K> ' + shown + after
+          + '\r\n\x1b[Kstatus row\x1b[A\r\x1b[%dC' % (2 + len(shown)))
 
 
 def report(text):
@@ -69,6 +74,8 @@ while True:
             report('got escape')
         elif byte == b'\x01':
             write('\x1b[?1049h\x1b[Halt screen')
+        elif byte == b'\x02':
+            prompt()
         elif menu:
             if byte in (b'1', b'2'):
                 menu = False
