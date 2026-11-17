@@ -131,6 +131,59 @@ and blocking on it for no reason a mid-drag `cooked--sync-size\=' would forgive.
     (cooked--dolist-windows w (get-buffer-window-list (current-buffer) nil t)
       (force-window-update w))))
 
+(defvar cooked-last-failure nil
+  "The last error to escape a drain, as a plist, for a report of it.
+:time, :buffer, :error, :where -- the innermost functions it came out of,
+innermost first -- and :backtrace.  See `cooked-show-last-failure'.")
+
+(declare-function backtrace-get-frames "backtrace" (&optional base))
+(declare-function backtrace-to-string "backtrace" (&optional frames))
+
+(defun cooked--note-failure (err)
+  "Keep ERR, signalled out of a drain, with where it came from.
+A handler, called where it was signalled and before anything unwinds: by the
+time `cooked--on-wake' reports it, the frames that would say which search was
+given its bound on the wrong side of point are gone."
+  (require 'backtrace)
+  (let ((where nil))
+    (mapbacktrace (lambda (evald fun _args _flags)
+                    (when (and evald (symbolp fun) (< (length where) 6)
+                               (not (memq fun '(cooked--note-failure signal error
+                                                 user-error handler-bind-1))))
+                      (push fun where)))
+                  #'cooked--note-failure)
+    (setq cooked-last-failure
+          (list :time (current-time) :buffer (buffer-name) :error err
+                :where (nreverse where)
+                :backtrace (backtrace-to-string
+                            (backtrace-get-frames #'cooked--note-failure))))))
+
+(defmacro cooked--noting-failure (&rest body)
+  "Run BODY, keeping any error that escapes it in `cooked-last-failure'.
+Only where `handler-bind' exists (Emacs 30); otherwise just BODY."
+  (declare (indent 0) (debug t))
+  (if (fboundp 'handler-bind)
+      `(handler-bind ((error #'cooked--note-failure)) ,@body)
+    `(progn ,@body)))
+
+(defun cooked-show-last-failure ()
+  "Show the last error to escape a drain, with its backtrace."
+  (interactive)
+  (unless cooked-last-failure
+    (user-error "No drain has failed%s"
+                (if (fboundp 'handler-bind) "" " (or this Emacs cannot say: it needs 30)")))
+  (with-current-buffer (get-buffer-create "*cooked failure*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (format "%s in %s\n%S\n\n"
+                      (format-time-string "%F %T" (plist-get cooked-last-failure :time))
+                      (plist-get cooked-last-failure :buffer)
+                      (plist-get cooked-last-failure :error))
+              (plist-get cooked-last-failure :backtrace))
+      (goto-char (point-min))
+      (special-mode))
+    (pop-to-buffer (current-buffer))))
+
 (defun cooked--drain-and-apply ()
   "Apply whatever the native core has accumulated since the last drain.
 
@@ -168,14 +221,15 @@ again is safe."
           (progn
             (setq cooked--draining t
                   cooked--drain-pending nil)
-            (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
-                                         cooked-scrollback-lines))
-            ;; Bounded in practice: the pending flag is set by a freeze lifting,
-            ;; and a freeze that has lifted does not lift again.
-            (while (and cooked--drain-pending cooked--session)
-              (setq cooked--drain-pending nil)
+            (cooked--noting-failure
               (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
-                                         cooked-scrollback-lines))))
+                                           cooked-scrollback-lines))
+              ;; Bounded in practice: the pending flag is set by a freeze lifting,
+              ;; and a freeze that has lifted does not lift again.
+              (while (and cooked--drain-pending cooked--session)
+                (setq cooked--drain-pending nil)
+                (cooked--apply (cooked--drain cooked--session cooked-rejoin-wrapped-lines
+                                             cooked-scrollback-lines)))))
         (when (buffer-live-p buffer)
           (with-current-buffer buffer
             (setq cooked--draining nil
@@ -237,8 +291,14 @@ selected one, so leaving a frozen buffer resumes it rather than stranding it."
           (condition-case err
               (cooked--drain-and-apply)
             (error
-             (message "cooked: redisplay failed: %S (point %s, cursor %S, screen-start %s)%s"
-                      err (point) cooked--cursor
+             (message "cooked: redisplay failed: %S%s (point %s, cursor %S, screen-start %s)%s"
+                      err
+                      (if-let* (((eq (plist-get cooked-last-failure :error) err))
+                                (where (plist-get cooked-last-failure :where)))
+                          (format " in %s; M-x cooked-show-last-failure"
+                                  (mapconcat #'symbol-name where " < "))
+                        "")
+                      (point) cooked--cursor
                       (cooked--screen-start-position)
                       (if cooked--resyncing "" "; resyncing"))
              (unless cooked--resyncing

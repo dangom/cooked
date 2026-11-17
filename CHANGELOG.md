@@ -83,6 +83,8 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   only once it has held, so a split made and undone never reaches it.
 - `cooked-mode-line-strip-title-symbols` and `cooked-mode-line-states` keep
   the mode line quiet.
+- A failed redisplay names the functions the error came out of, and
+  `cooked-show-last-failure` shows its backtrace (Emacs 30 and later).
 
 ### Changed
 

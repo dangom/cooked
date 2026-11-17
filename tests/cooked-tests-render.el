@@ -1585,6 +1585,48 @@ resync went and got it."
     (should (cooked-tests--settle
              (lambda () (string-match-p "afterwards" (cooked-tests--text)))))))
 
+(defun cooked-tests--search-the-wrong-way (&rest _)
+  "Search forward with a bound behind point, as some pass of a drain once did."
+  (goto-char (point-max))
+  (re-search-forward "x" (point-min) t))
+
+(ert-deftest cooked-a-failed-drain-says-where-it-failed ()
+  "The report of a failed drain names the functions the error came out of, and
+keeps the backtrace: by the time it is caught, the frames saying which search
+was given a bound on the wrong side of point are gone."
+  (skip-unless (fboundp 'handler-bind))
+  (cooked-tests--with-session '("/bin/cat")
+    (should (cooked-tests--settle (lambda () cooked--session)))
+    (let ((cooked-debug nil)
+          (cooked-last-failure nil)
+          (messages nil)
+          (failed nil))
+      (cl-letf* ((apply-fn (symbol-function 'cooked--apply))
+                 ((symbol-function 'cooked--apply)
+                  (lambda (&rest args)
+                    (if failed
+                        (apply apply-fn args)
+                      (setq failed t)
+                      (cooked-tests--search-the-wrong-way))))
+                 (message-fn (symbol-function 'message))
+                 ((symbol-function 'message)
+                  (lambda (format &rest args)
+                    (when format (push (apply #'format format args) messages))
+                    (apply message-fn format args))))
+        (cooked--send cooked--session "hello\n")
+        (should (cooked-tests--settle (lambda () failed))))
+      (should (equal (cadr (plist-get cooked-last-failure :error))
+                     "Invalid search bound (wrong side of point)"))
+      (should (eq (car (plist-get cooked-last-failure :where)) 're-search-forward))
+      (should (memq 'cooked-tests--search-the-wrong-way
+                    (plist-get cooked-last-failure :where)))
+      (should (string-match-p "cooked-tests--search-the-wrong-way"
+                              (plist-get cooked-last-failure :backtrace)))
+      (should (seq-some (lambda (m) (string-match-p
+                                     "redisplay failed.* in re-search-forward < cooked-tests--search-the-wrong-way"
+                                     m))
+                        messages)))))
+
 (ert-deftest cooked-a-still-render-at-a-prompt-holds-the-view-but-not-the-line ()
   "The three axes come apart at a prompt.
 
