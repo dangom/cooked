@@ -343,6 +343,41 @@ ring."
       (should (cooked-tests--settle
                (lambda () (string-search "chose 1" (cooked-tests--text))))))))
 
+(ert-deftest cooked-program-line-holds-keys-typed-before-the-enter ()
+  "Keys typed straight after RET, before the program has taken the line, are not
+added to it: they go to the program after its Enter, as the next line, and
+Emacs takes that one too."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "h e l l o")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    ;; No drain between RET and the next keys: the program has not taken the
+    ;; paste yet when they are pressed.
+    (execute-kbd-macro (kbd "RET w o r l d"))
+    (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "hello"))))
+    (should-not (string-search "helloworld" (cooked-tests--text)))
+    (should (cooked-tests--settle
+             (lambda () (equal (cooked--pending-input) "world"))))
+    (should cooked--program-line)
+    (cooked-tests--line-keys "RET")
+    (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "world"))))))
+
+(ert-deftest cooked-program-line-releases-held-keys-without-output ()
+  "A program that never takes the line, and draws nothing more, does not keep the
+keys typed meanwhile: they are sent when the wait runs out."
+  (let ((cooked-program-line-accept-timeout 0.3))
+    (cooked-tests--with-line-editor
+      (cooked-tests--line-keys "a b c")
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (cooked--send cooked--session "?")
+      (should (cooked-tests--settle
+               (lambda () (string-search "1. yes" (cooked-tests--text)))))
+      (let ((kill-ring nil))
+        ;; The menu ignores the paste and draws nothing; `1' is held, then sent.
+        (execute-kbd-macro (kbd "RET 1"))
+        (should (cooked-tests--settle
+                 (lambda () (string-search "chose 1" (cooked-tests--text))) 2))
+        (should (equal (car kill-ring) "abc"))))))
+
 (ert-deftest cooked-program-line-passes-escape-and-keeps-the-line ()
   "Escape reaches the program while Emacs owns the line, and the line stays."
   (cooked-tests--with-line-editor

@@ -513,6 +513,8 @@ then sends Enter.
 - *Safe Enter.* Enter is sent only once the program has visibly taken the paste. If it
   has put a question up meanwhile, nothing answers it: the line goes to the kill ring.
   So does a line the program walks away from by taking the alternate screen or exiting.
+  Keys typed right after =RET= are held until the Enter has been taken, so they start
+  the next line rather than being sent ahead of the Enter as the end of this one.
 
 The program is left entirely to itself: cooked sets nothing in its environment, so its
 settings, memory and updates behave exactly as in any terminal. Many agent CLIs offer

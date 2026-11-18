@@ -1585,6 +1585,17 @@ taking the paste. A menu ignores a paste, the cursor stays put, and after
 What this cannot rule out is a menu appearing in the few milliseconds between the paste
 landing and the Enter, the same race a terminal has when Enter is pressed as a menu opens.
 
+Between `RET` and that Enter the keyboard is the program's again, and anything typed in
+the gap -- the start of the next message, typed without pausing -- would reach it before
+the Enter and be submitted as the end of this message. So keys are held while the line
+waits (`cooked-program-line-hold-map`, active on `cooked-program-line--submit`), and sent
+only once the program has taken the Enter too: its cursor moved a second time, or
+`cooked-program-line-echo-timeout` passed. Waiting for the Enter rather than sending them
+straight after it is what lets Emacs take the next line as well: the first held character
+asks the program for its echo from the column of the empty line it has redrawn, not from
+the end of the message it is still showing. A timer ends either wait, since a deadline
+checked only on drains never comes for a program that has stopped drawing.
+
 ## Inline programs keep their height when the window shrinks
 
 Copies of an agent's conversation -- its banner, the border of its input box, a prompt --

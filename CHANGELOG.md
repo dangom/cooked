@@ -137,6 +137,9 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- With `cooked-program-line-editor` set to `emacs`, keys typed straight after `RET`,
+  before the program had taken the line, were sent ahead of its Enter and
+  submitted as the end of the message. They are held, and start the next line.
 - Output arriving while a line was edited mid-way moved point to the end of the
   line; it stays where it was.
 - Truecolor sequences swallowing the parameter after them.

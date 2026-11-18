@@ -28,7 +28,10 @@
 ;; once the program has visibly taken the paste -- its cursor moved.  A program
 ;; that has meanwhile put a question up is not answered by a Return meant for a
 ;; message: the paste lands nowhere, no Enter follows, and the text goes to the
-;; kill ring.
+;; kill ring.  Keys typed while that is decided are held, and sent once the
+;; program has drawn the empty line the Enter leaves -- so they start the next
+;; line, which Emacs can take in turn, rather than being sent ahead of the Enter
+;; and submitted as the end of this one.
 ;;
 ;; A few things stay the program's:
 ;;
@@ -151,9 +154,19 @@ Set by a character from `cooked-program-line-delegate-characters', and by
 handing the line back with `cooked-delegate-key'.")
 
 (defvar-local cooked-program-line--submit nil
-  "A line handed to the program and waiting for it to be taken, or nil.
-A plist: `:text', `:cell' -- the cursor's cell when it was sent -- and
-`:deadline'.")
+  "A line handed to the program and not yet done with, or nil.
+
+A plist.  `:phase' is `paste' until the program's cursor moves, which is the
+paste taken, and then `enter' until it moves again, which is the Enter taken.
+`:text' is the line, `:cell' the cursor's cell when the phase began,
+`:deadline' when to stop waiting, and `:queue' the keys typed meanwhile, newest
+first -- held by `cooked-program-line-hold-key' and sent by
+`cooked-program-line--flush'.")
+
+(defvar-local cooked-program-line--timer nil
+  "The timer that ends the wait in `cooked-program-line--submit', or nil.
+Drains check the deadline as well, but a program that draws nothing would
+otherwise keep the keys held for it forever.")
 
 (defvar-local cooked-program-line--text nil
   "The line Emacs owns, as of the last command.
@@ -357,27 +370,89 @@ paste; see `cooked-program-line-accept-timeout'."
     (cooked--clear-input-region)
     (cooked--history-record text)
     (setq cooked--program-line nil
-          cooked-program-line--text nil
-          cooked-program-line--submit
-          (list :text text
-                :cell (cooked--cursor-cell)
-                :deadline (+ (float-time) cooked-program-line-accept-timeout)))
+          cooked-program-line--text nil)
+    (cooked-program-line--wait 'paste cooked-program-line-accept-timeout text)
     (cooked--refresh-keymap)
     (cooked--send-to-child (if (cooked--bracketed-paste-p cooked--session)
                                (cooked--bracketed-paste text)
                              text))))
 
+(defun cooked-program-line--wait (phase seconds &optional text)
+  "Wait up to SECONDS for the program's cursor to move, in PHASE.
+TEXT is the line, when starting the wait; later phases keep the line and the
+keys held so far."
+  (let ((submit cooked-program-line--submit))
+    (setq cooked-program-line--submit
+          (list :phase phase
+                :text (or text (plist-get submit :text))
+                :cell (cooked--cursor-cell)
+                :deadline (+ (float-time) seconds)
+                :queue (plist-get submit :queue))))
+  (cooked-program-line--cancel-timer)
+  (let ((buffer (current-buffer)))
+    (setq cooked-program-line--timer
+          ;; A little after the deadline, so the check it runs finds it passed.
+          (run-with-timer (+ seconds 0.01) nil
+                          (lambda ()
+                            (when (buffer-live-p buffer)
+                              (with-current-buffer buffer
+                                (cooked--protect-hook
+                                  (when cooked-program-line--submit
+                                    (cooked-program-line--check-submit))))))))))
+
+(defun cooked-program-line--cancel-timer ()
+  "Cancel `cooked-program-line--timer', if it is running."
+  (when (timerp cooked-program-line--timer)
+    (cancel-timer cooked-program-line--timer))
+  (setq cooked-program-line--timer nil))
+
 (defun cooked-program-line--check-submit ()
-  "Send the Enter a handed-over line waits for, once the program took it."
+  "Move a handed-over line on, once the program's cursor shows it moved on.
+
+Taken the paste: send the Enter, and wait for the program to take that too.
+Taken the Enter: send what was typed meanwhile.  Out of time waiting for the
+paste: no Enter, the line to the kill ring, and what was typed sent, as it
+would have been with no line handed over at all."
   (let ((submit cooked-program-line--submit))
     (cond
      ((not (equal (cooked--cursor-cell) (plist-get submit :cell)))
-      (setq cooked-program-line--submit nil)
-      (cooked--send-if-live "\r"))
-     ((> (float-time) (plist-get submit :deadline))
-      (setq cooked-program-line--submit nil)
-      (kill-new (plist-get submit :text))
-      (message "cooked: the program did not take the line; it is on the kill ring")))))
+      (if (eq (plist-get submit :phase) 'paste)
+          (progn
+            (cooked--send-if-live "\r")
+            ;; Short: a program that took the line answers an Enter at once,
+            ;; and the keys held meanwhile are waiting on it.
+            (cooked-program-line--wait 'enter cooked-program-line-echo-timeout))
+        (cooked-program-line--flush)))
+     ((>= (float-time) (plist-get submit :deadline))
+      (when (eq (plist-get submit :phase) 'paste)
+        (kill-new (plist-get submit :text))
+        (message "cooked: the program did not take the line; it is on the kill ring"))
+      (cooked-program-line--flush)))))
+
+(defun cooked-program-line--flush ()
+  "Stop waiting on a handed-over line, and send the keys held while waiting.
+Each goes as it would have when typed, and is watched as it would have been:
+the first character of a new line asks the program whether it echoes."
+  (let ((queue (reverse (plist-get cooked-program-line--submit :queue))))
+    (setq cooked-program-line--submit nil)
+    (cooked-program-line--cancel-timer)
+    (dolist (event queue)
+      (when (cooked--live-session)
+        (let ((last-command-event event))
+          (cooked-send-key))
+        (cooked-program-line--observe event)))))
+
+(defun cooked-program-line-hold-key ()
+  "Hold the key that invoked this command until the program has taken the line.
+Bound in place of the commands that send a key to the program while a line
+handed to it waits for its Enter; see `cooked-program-line--submit'."
+  (interactive)
+  (let ((event (if (eq this-original-command 'cooked-send-meta-key)
+                   (event-apply-modifier last-command-event 'meta 27 "M-")
+                 last-command-event)))
+    (setq cooked-program-line--submit
+          (plist-put cooked-program-line--submit :queue
+                     (cons event (plist-get cooked-program-line--submit :queue))))))
 
 (defun cooked-program-line--hand-over ()
   "Give the line Emacs owns back to the program, for it to keep.
@@ -424,9 +499,19 @@ Built from `cooked-program-line-pass-keys'.")
 
 (cooked-program-line--rebuild-pass-map)
 
+(defvar cooked-program-line-hold-map
+  (let ((map (make-sparse-keymap)))
+    ;; ASCII is bound to `cooked-send-key' outright, other characters reach it
+    ;; by remapping `self-insert-command', and a remap is followed only once.
+    (dolist (command '(cooked-send-key cooked-send-meta-key self-insert-command))
+      (define-key map (vector 'remap command) #'cooked-program-line-hold-key))
+    map)
+  "Keys held while a line handed to the program waits for its Enter.")
+
 (defvar cooked-program-line--map-alist
-  `((cooked--program-line . ,cooked-program-line-pass-map))
-  "The `emulation-mode-map-alists' entry activating the pass keys.")
+  `((cooked--program-line . ,cooked-program-line-pass-map)
+    (cooked-program-line--submit . ,cooked-program-line-hold-map))
+  "The `emulation-mode-map-alists' entry activating the pass and hold keys.")
 
 (add-to-list 'emulation-mode-map-alists 'cooked-program-line--map-alist)
 
@@ -466,10 +551,12 @@ which, with `cooked-program-line-editor' at its default, is always."
              cooked-program-line--held cooked-program-line--submit)))
    ((not (cooked-navigate--eligible-p))
     ;; Not a program on the main screen reading keys any more: nothing it drew
-    ;; was an answer, and a line it held is not one anything reads.
+    ;; was an answer, and a line it held is not one anything reads.  Keys typed
+    ;; while a line waited go wherever the keyboard now goes.
     (setq cooked-program-line--probe nil
-          cooked-program-line--held nil
-          cooked-program-line--submit nil)
+          cooked-program-line--held nil)
+    (when cooked-program-line--submit
+      (cooked-program-line--flush))
     (when cooked--program-line
       (cooked-program-line--release 'rescue)))
    (t
