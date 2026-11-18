@@ -103,6 +103,8 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Changed
 
+- A soft-wrapped line no longer has a continuation arrow in the fringe. A
+  truncated row keeps its truncation arrow.
 - Output floods are several times faster. Scrollback that `cooked-scrollback-lines`
   would trim the moment it arrived is dropped in the native core instead of being sent
   to Emacs, and the child is no longer held back for scrollback while a cap is set.

@@ -2174,6 +2174,16 @@ to the child verbatim."
   ;; prompt and tree glyphs are followed by one, which showed up as a red `_'
   ;; on every such line.
   (setq-local nobreak-char-display nil)
+  ;; No arrow in the fringe where a long line soft-wraps.  In a terminal a
+  ;; wrapped row is the ordinary case -- an agent's paragraphs, a long command
+  ;; line -- and the arrows say nothing the text does not, beside every one.
+  ;; Truncation keeps its arrow (see `cooked--mark-truncation'): there,
+  ;; characters were dropped, which the text cannot show.  A user who wants the
+  ;; continuation arrows back can set this again from `cooked-mode-hook'.
+  (setq-local fringe-indicator-alist
+              (cons '(continuation nil nil)
+                    (assq-delete-all 'continuation
+                                     (copy-sequence fringe-indicator-alist))))
   (setq-local scroll-conservatively 101
               ;; Both margins to zero, as eat and vterm also set them.  A
               ;; terminal's viewport is the whole window: the child decides what
