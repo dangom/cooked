@@ -146,6 +146,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   until the program redrew. Everything on the live screen but the pending input
   is now read-only at all times, kept so by `cooked--protect` wherever the input
   region is made or cleared, rather than for the length of a command.
+- "Text is read-only" from `C-k` in a program's line that Emacs edits, after
+  `C-n` off the line and `C-p` back. In a window the motion came to rest at the
+  end of the row, past what the program draws after its cursor, which is hidden
+  and so drawn where the end of the line is. After every command point is now
+  in the line or off its rows, never beside it on one of them: not in that
+  hidden text, and not in the prompt.
 - A question an agent put up while a line was half typed could not be answered:
   the line was drawn inside the question and every key stayed Emacs'. The line
   now steps aside, off the screen and kept, until the program is back at its

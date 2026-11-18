@@ -171,6 +171,52 @@ the program's text after it are fields of their own, as comint's prompts are."
       (global-unset-key [f5])
       (global-unset-key [f6]))))
 
+(ert-deftest cooked-program-line-keeps-point-in-the-line-or-off-its-rows ()
+  "After any command point is in the line Emacs owns or off its rows, never
+beside it on one of them: in the prompt, or in what the program draws after its
+cursor and Emacs hides.  Nothing can be edited at either.  The hidden end is
+the one a motion by screen column finds -- \\`C-n' off the line and \\`C-p'
+back, in a window -- since it is drawn where the end of the line is."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "a b c")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (unwind-protect
+        (pcase-let ((`(,start . ,end) (cooked--input-region)))
+          (global-set-key [f5] (lambda () (interactive)
+                                 (let ((inhibit-field-text-motion t))
+                                   (goto-char (pos-eol)))))
+          (global-set-key [f6] (lambda () (interactive)
+                                 (let ((inhibit-field-text-motion t))
+                                   (goto-char (pos-bol)))))
+          (should (> (pos-eol) end))
+          (should (< (pos-bol) start))
+          ;; Past the end of the line, on its row.
+          (cooked-tests--line-keys "C-a <f5>")
+          (should (= (point) end))
+          (should-not cooked--wandered)
+          (should-not cooked-navigate--reading)
+          (cooked-tests--line-keys "C-a M-f <f5> d")
+          (should (equal (cooked--pending-input) "abcd"))
+          ;; Before its start.
+          (cooked-tests--line-keys "<f6>")
+          (should (= (point) (car (cooked--input-region))))
+          (should-not cooked--wandered)
+          ;; From the row below, backwards onto the end of the row.
+          (cooked-tests--line-keys "C-n")
+          (should cooked-navigate--reading)
+          (should (> (point) (cdr (cooked--input-region))))
+          (cooked-tests--line-keys "C-a C-b")
+          (should (= (point) (cdr (cooked--input-region))))
+          ;; From the row above at column 0, down into the prompt.
+          (cooked-tests--line-keys "C-p C-a")
+          (should (< (point) (car (cooked--input-region))))
+          (cooked-tests--line-keys "C-n")
+          (should (= (point) (car (cooked--input-region))))
+          (cooked-tests--line-keys "C-k")
+          (should-not cooked--program-line))
+      (global-unset-key [f5])
+      (global-unset-key [f6]))))
+
 (ert-deftest cooked-program-line-keeps-point-through-a-redraw ()
   "A program redrawing while its line is edited -- a status update, a spinner
 -- does not move point: editing at the start of the line stays there."

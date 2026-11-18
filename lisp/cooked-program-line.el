@@ -537,6 +537,43 @@ middle of whatever the program is drawing."
   (setq cooked-program-line--tail nil
         cooked-program-line--veiled nil))
 
+(defun cooked-program-line--keep-point ()
+  "Put point in the line Emacs owns, if a command left it beside it.
+
+The invariant, after every command: point is in the line, or off its rows
+altogether and reading the output.  Never on one of its rows and outside it.
+Before the line is the program's prompt and after it what the program draws
+past its cursor; nothing can be typed or killed at either, so a point left
+there is one every edit is refused at, with the line it was meant for a column
+away.
+
+After the line it cannot even be seen.  What `cooked-program-line--bound'
+hides is still in the buffer, so the end of the line and the end of its row
+are two positions drawn in one place, and a motion by screen column picks
+either: \\`C-n' off the line and \\`C-p' back came to rest at the end of
+the row, and \\`C-k' with the whole line before it said the text was
+read-only.
+
+The nearer end of the line is where point goes.  Not while the line is veiled,
+when the program is drawing something else on that row and it is not the
+line's.
+
+Ahead of `cooked--track-wandering', which would take such a point for one
+parked in the program's text, and pin it there."
+  (cooked--protect-hook
+    (when-let* (((and cooked--program-line
+                      (not (overlayp cooked-program-line--veiled))))
+                (region (cooked--input-region)))
+      (pcase-let ((`(,start . ,end) region)
+                  (inhibit-field-text-motion t))
+        (cond ((<= start (point) end))
+              ((and (< (point) start)
+                    (>= (point) (save-excursion (goto-char start) (pos-bol))))
+               (goto-char start))
+              ((and (> (point) end)
+                    (<= (point) (save-excursion (goto-char end) (pos-eol))))
+               (goto-char end)))))))
+
 ;;;; Handing the line back
 
 (defun cooked-program-line-submit ()
@@ -796,6 +833,7 @@ which, with `cooked-program-line-editor' at its default, is always."
   (setq-local cooked-navigate-yield-function #'cooked-program-line--asking-p)
   (add-hook 'cooked-drain-functions #'cooked-program-line--after-drain nil t)
   (add-hook 'pre-command-hook #'cooked-program-line--pre-command -60 t)
+  (add-hook 'post-command-hook #'cooked-program-line--keep-point -20 t)
   (add-hook 'post-command-hook #'cooked-program-line--post-command 40 t))
 
 (add-hook 'cooked-mode-hook #'cooked-program-line--setup)
