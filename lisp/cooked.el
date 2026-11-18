@@ -886,9 +886,13 @@ should go through."
     (set-marker mark position)))
 
 (defun cooked--clear-input-region ()
-  "Forget the pending input region, leaving its text alone."
-  (cooked--set-input-mark nil)
-  (setq cooked--input-end nil))
+  "Forget the pending input region, leaving its text alone.
+The text stops being editable with it: see `cooked--protect'."
+  (when (or cooked--input-end
+            (when-let* ((mark (cooked--input-mark))) (marker-position mark)))
+    (cooked--set-input-mark nil)
+    (setq cooked--input-end nil)
+    (cooked--protect-input)))
 
 (defun cooked--input-region ()
   "The pending input\='s bounds as (START . END), or nil when there is no region.
@@ -1026,6 +1030,76 @@ submitted while the child is sent an empty line."
         (cond ((< (point) (car region)) (goto-char (car region)))
               ((> (point) (cdr region)) (goto-char (cdr region))))))))
 
+;;;; The line's edges, for the length of a command
+;;
+;; `cooked--protect' settles what a command may change.  Where a command
+;; *stops* is a separate matter: `backward-kill-word' at the start of the line
+;; looks for a word in the prompt, and is then refused the kill -- an error for
+;; what should have been nothing at all -- and a package's own start-of-line
+;; command lands in the prompt, where no key that follows can do anything.
+
+(defvar-local cooked--fenced nil
+  "Whether `cooked--fence' has fields up.")
+
+(defvar cooked-unfenced-commands
+  '(evil-beginning-of-line evil-digit-argument-or-evil-beginning-of-line
+    evil-insert-0-line)
+  "Commands that find a row's own beginning, prompt included.
+`cooked--fence' puts nothing up for these.  evil's \\`0' and \\`gI' are the way
+to column 0 that `cooked-beginning-of-line-skips-prompt' leaves in place.")
+
+(defun cooked--fence ()
+  "Fence the pending input for the command about to run.
+
+The prompt before the line, on its first row, becomes a field of its own, as
+comint's prompts are: every command that finds the beginning of a line or of a
+word stops at the line rather than going on into the prompt, whichever package
+wrote it and whatever key it is on.  Everything after the line -- a right-hand
+prompt, what a program drew after its cursor, the rows below -- becomes a field
+too, so the end of the line is the end of what was typed.
+
+Fields only.  That nothing outside the line can be *changed* is not this
+function's to arrange and does not wait for a command: see `cooked--protect'.
+
+For the length of a command only, put up last on `pre-command-hook' and taken
+down first on `post-command-hook': fields change what `line-beginning-position'
+and `line-end-position' answer, and the renderer, which asks them about rows,
+must never see one.  `cooked--apply' binds `inhibit-field-text-motion' for a
+drain that runs inside a command."
+  (cooked--protect-hook
+    (when-let* (((cooked--input-state-p))
+                ((not (memq this-command cooked-unfenced-commands)))
+                (region (cooked--input-region)))
+      (pcase-let ((`(,start . ,end) region))
+        (with-silent-modifications
+          (let ((bol (save-excursion (goto-char start) (pos-bol))))
+            (when (< bol start)
+              (put-text-property bol start 'field 'cooked-prompt)))
+          (when (< end (point-max))
+            (put-text-property end (point-max) 'field 'cooked-after)
+            ;; An empty line is a place between two fields, and Emacs gives a
+            ;; place neither field holds on to no field of its own: a motion
+            ;; from it goes straight through either.  So the field after an
+            ;; empty line holds on to it, for this command.
+            (when (= start end)
+              (put-text-property end (1+ end) 'front-sticky '(field)))))
+        (setq cooked--fenced (if (= start end) 'empty t))))))
+
+(defun cooked--unfence ()
+  "Take down what `cooked--fence' put up, if anything."
+  (cooked--protect-hook
+    (when-let* ((fenced cooked--fenced))
+      (setq cooked--fenced nil)
+      (with-silent-modifications
+        (remove-list-of-text-properties
+         (or (cooked--screen-start-position) (point-min)) (point-max)
+         '(field)))
+      ;; The stickiness lent to the character after an empty line: swept back
+      ;; to what `cooked--protect' says, wherever that character is now.
+      (when (eq fenced 'empty)
+        (setq cooked--protected nil)
+        (cooked--protect-input)))))
+
 (defun cooked--take-pending-input ()
   "Remove the pending input from the buffer and return it."
   (when-let* ((region (cooked--input-region))
@@ -1057,7 +1131,8 @@ pushing it along."
       ;; ever changes, this marker needs a cell rather than a position behind it.
       (set-marker comint-last-input-start (point))
       (when text (insert text))
-      (setq cooked--input-end (copy-marker (point) t)))))
+      (setq cooked--input-end (copy-marker (point) t)))
+    (cooked--protect-input)))
 
 (defun cooked--point-after-input ()
   "Where point belongs after a redisplay."
@@ -1333,12 +1408,17 @@ emoji, a skin tone, a ZWJ and the character it binds."
         (cons (point) reached)))))
 
 (defconst cooked--read-only-props
-  '(read-only t front-sticky (read-only) rear-nonsticky (read-only))
+  '(read-only t front-sticky (read-only) rear-nonsticky (read-only field))
   "The read-only property and the stickiness that makes it usable.
 
 Stickiness carries the whole design.  `rear-nonsticky\=' leaves the far edge
 open, so typing at the start of the input region is accepted; `front-sticky\='
 closes the near edge, so nothing can be wedged in above the transcript.
+
+`field\=' is non-sticky at the far edge too.  Nothing here sets one, but the
+prompt before a line is made a field for the length of a command (see
+`cooked--fence\='), and its first position must then belong to the
+line rather than to the prompt, or nothing could move forward from there.
 
 One constant rather than the literal written out at both of the places that
 protect text -- `cooked--render-scrolled\=', which protects a batch of
@@ -1804,59 +1884,93 @@ src/emu/cell.rs."
         (error "cooked: seam desync: buffer holds %d characters of row 0's line, emulator says %d"
                head want)))))
 
-(defvar-local cooked--protected nil
-  "What `cooked--protect\=' last did, as (TICK . LIMIT), or nil for never.
+;; The one invariant every editing command in a cooked buffer rests on:
+;;
+;;   *The pending input is the only text in the buffer that can be edited.*
+;;
+;; Everything else is the child's -- the transcript above the line, the prompt
+;; before it, and whatever the child drew after its cursor -- and is read-only
+;; for as long as it is in the buffer, not only while some command is known to
+;; be about to touch it.  A kill that runs off either end of the line is then
+;; refused by Emacs itself, whatever command it was and whoever bound it, and
+;; text can never be inserted where `cooked-send-input' would not find it.
+;;
+;; `cooked--protect' is the only writer of `read-only' on the live screen, and
+;; it is called wherever the region is made or moved.
 
-TICK is `buffer-chars-modified-tick\=' as of that call.  See there for what it
+(defconst cooked--input-edge-props
+  '(read-only t front-sticky nil rear-nonsticky (read-only field))
+  "What the first character after the pending input carries.
+
+Read-only like the rest of the child's text, but not `front-sticky': an
+insertion is refused where the character after it is read-only and
+front-sticky, and the end of the line is exactly where typing lands.  One
+character is enough -- the one before it is the input's own, or the prompt's
+last, whose `rear-nonsticky' opens the same position from the other side.")
+
+(defvar-local cooked--protected nil
+  "What `cooked--protect\=' last did, as (TICK START . END), or nil for never.
+
+TICK is `buffer-chars-modified-tick\=' as of that call, START and END the
+region it left editable, both nil when there was none.  See there for what it
 buys.")
 
-(defun cooked--protect (limit)
-  "Make the screen read-only up to LIMIT, leaving anything after it editable.
+(defun cooked--protect (&optional region)
+  "Make the live screen read-only, all but REGION.
 
-The properties, and why they are the ones they are, are
-`cooked--read-only-props\='.
+REGION is the pending input as (START . END), or nil while there is none --
+the child owns the keyboard, or a line is in flight -- and then the whole
+screen is read-only.  The properties, and why they are the ones they are, are
+`cooked--read-only-props\=' and `cooked--input-edge-props\='.
 
-Runs on every drain, and most drains have nothing for it to do.  The property is
-lost only where text is *inserted*, since an insertion carries no properties of
-its own, so a drain that changed no characters can only have moved LIMIT -- and
-then the whole of the work is the strip of text between the old boundary and the
-new one, in whichever direction it went.  `buffer-chars-modified-tick\=' is what
-says a drain changed no characters, and it says it about every writer rather
-than about the ones this file knows of: an insertion anywhere, by any layer,
-moves it.
+Runs on every drain, and most drains have nothing for it to do: the property
+is lost only where text is *inserted*, since an insertion carries no properties
+of its own, so a drain that changed no characters and moved no edge can skip
+the work outright.  `buffer-chars-modified-tick\=' is what says no characters
+changed, and it says it about every writer rather than about the ones this
+file knows of.
 
-The full sweep is kept for the case where it did change, rather than narrowed to
-the rows the render rewrote.  Those bounds do exist -- `cooked--render-rows\='
-returns them -- but they are not the whole of what a drain inserts:
-`cooked--pad-to-cursor\=' extends the cursor\='s row, which need not be the last
-one, and `cooked--fit-screen\=' and `cooked--goto-screen-row\=' add the newlines
-that make a row exist.  A sweep that misses one of those leaves a hole in the
-transcript the user can type into, which is not a failure any test would show.
-Measured, the sweep over a 50x200 screen that is already protected costs one to
-thirteen microseconds depending on how many face runs it is walking -- it is the
-*cold* part, the text the drain actually wrote, that costs, and that has to be
-paid wherever it is paid from."
+Otherwise the whole screen is swept, rather than the rows the render rewrote.
+Those bounds exist -- `cooked--render-rows\=' returns them -- but they are not
+the whole of what a drain inserts: `cooked--pad-to-cursor\=' extends the
+cursor\='s row, and `cooked--fit-screen\=' and `cooked--goto-screen-row\=' add
+the newlines that make a row exist.  A sweep that misses one of those leaves a
+hole in the transcript the user can type into, which is not a failure any test
+would show.  Text that already carries the properties costs nothing to ask
+again: the values are the same objects, and `add-text-properties\=' leaves an
+interval it would not change alone.
+
+What was read-only and is now input has every trace of it removed, not only
+the property.  Its stickiness outliving it is how a character the child had
+drawn, taken as the user\='s, went on refusing whatever was typed before it."
   (when-let* ((screen (cooked--screen-start-position)))
-    (let ((tick (buffer-chars-modified-tick))
-          (beg (min screen limit)))
-      (pcase cooked--protected
-        ;; Nothing moved at all: the previous call\='s answer still stands.
-        (`(,(pred (eql tick)) . ,(pred (eql limit))) nil)
-        ;; No text changed, so only the boundary did.  Everything below the
-        ;; lower of the two limits was protected then and still is; everything
-        ;; above the higher was open then and still is.
-        (`(,(pred (eql tick)) . ,was)
-         (if (< was limit)
-             (add-text-properties (max beg was) limit cooked--read-only-props)
-           (remove-text-properties limit (min was (point-max)) '(read-only nil))))
-        (_
-         (add-text-properties beg limit cooked--read-only-props)
-         (when (< limit (point-max))
-           (remove-text-properties limit (point-max) '(read-only nil)))))
-      ;; Read again: the two calls above do not change `buffer-chars-modified-tick\='
-      ;; -- a text property is not a character -- but reading it after the fact
-      ;; rather than trusting that is one less thing to be wrong about later.
-      (setq cooked--protected (cons (buffer-chars-modified-tick) limit)))))
+    (let* ((tick (buffer-chars-modified-tick))
+           (max (point-max))
+           (start (and region (max screen (min (car region) max))))
+           (end (and region (max start (min (cdr region) max))))
+           (state (cons tick (cons start end))))
+      (unless (equal state cooked--protected)
+        (if (null region)
+            (add-text-properties screen max cooked--read-only-props)
+          (add-text-properties screen start cooked--read-only-props)
+          (remove-list-of-text-properties
+           start end '(read-only front-sticky rear-nonsticky))
+          (when (< end max)
+            (add-text-properties end (1+ end) cooked--input-edge-props)
+            (add-text-properties (1+ end) max cooked--read-only-props)))
+        ;; Read again: none of the calls above changes
+        ;; `buffer-chars-modified-tick\=' -- a text property is not a character
+        ;; -- but reading it after the fact rather than trusting that is one
+        ;; less thing to be wrong about later.
+        (setq cooked--protected
+              (cons (buffer-chars-modified-tick) (cons start end)))))))
+
+(defun cooked--protect-input ()
+  "Protect the screen around the pending input as it now stands.
+For every place that makes, moves or gives up the input region outside a drain."
+  (let ((inhibit-read-only t))
+    (with-silent-modifications
+      (cooked--protect (and (cooked--input-state-p) (cooked--input-region))))))
 
 (defconst cooked--fixed-pitch-probe
   (concat (apply #'string (number-sequence ?\s ?~))
@@ -2863,6 +2977,10 @@ which is the ordinary case and stays free."
                (let ((chars (cooked--window-max-chars window)))
                  (when (< chars width)
                    (setq narrowest window width chars))))))))
+
+;; Defined just below, by the options this is the `:set' of.
+(defvar cooked-min-redisplay-interval)
+(defvar cooked-backlog-limit)
 
 (defun cooked--set-tuning-option (symbol value)
   "Set SYMBOL to VALUE and hand the pair to every session already running.

@@ -348,17 +348,19 @@ redisplays from independently, touched only by `set-window-point', so a
 second window on a busy cooked buffer would otherwise freeze wherever it
 last happened to be pointed, deaf to every later drain.
 
-A window's own point, not the buffer's, decides whether it is still
-following, mirroring `follow' one level down: scrolling that window with the
-wheel or a scrollbar does not move its point, so such a window is left alone
-here for the same reason `follow' would leave the buffer's point alone for
-the same case — it reads as the user choosing to look elsewhere, not as a
-window that fell behind."
+Whether such a window is still following is its own to say, and it says so
+through `cooked--window-held-p': a window some command left scrolled away from
+the bottom is the user choosing to look elsewhere, not a window that fell
+behind.  See `cooked--note-scrolled-windows'."
   (when-let* ((start (cooked--screen-start-position)))
     ;; Never a dock, which `cooked--after-scroll-hook' places itself, nor the
     ;; window above one: that window is docked because it was scrolled away
     ;; from the bottom, and following would be undoing exactly that.
-    (seq-filter (lambda (w) (and (>= (window-point w) start)
+    (seq-filter (lambda (w) (and (or cooked--alt
+                                     (and (not (cooked--window-held-p w))
+                                          ;; And one whose point is up in the
+                                          ;; history, however it got there.
+                                          (>= (window-point w) start)))
                                  (not (cooked--dock-window-p w))
                                  (not (window-live-p
                                        (window-parameter w 'cooked-dock)))))
@@ -686,7 +688,7 @@ looked as if it still showed its bottom, and none was ever docked."
             (- (cdr (window-text-pixel-size window anchor end))
                (cdr (window-text-pixel-size window anchor (1- from))))))))))
 
-(defun cooked--clamp-overscroll ()
+(defun cooked--clamp-overscroll (&optional window)
   "Undo a scroll past the bottom of a window that is following the output.
 
 A terminal's last row is as far down as there is to go, but Emacs lets a window
@@ -705,22 +707,130 @@ A pixel scroll -- ultra-scroll, `pixel-scroll-precision-mode' -- moves the
 vertical scroll first and the start only once a whole row has gone by, so at
 the pinned start any vertical scroll at all is already past the bottom.
 Clamping only a start beyond the pin let each notch slide the text up by a few
-pixels and the row after snap it back: a sawtooth as fast as the wheel turned."
-  (when (and cooked--session (not cooked--alt) (cooked--follow-p))
-    (let ((window (selected-window)))
-      (when (eq (window-buffer window) (current-buffer))
-        (let ((top (if cooked--pin-screen-top
-                       ;; A cleared display is shown from its top, below the
-                       ;; transcript it archived -- further down than the bottom
-                       ;; pin, and on purpose; see `cooked--scroll-transcript'.
-                       (max (cooked--bottom-start window)
-                            (cooked--screen-start-position))
-                     (cooked--bottom-start window)))
-              (start (window-start window)))
-          (when (or (> start top)
-                    (and (= start top) (> (window-vscroll window t) 0)))
-            (set-window-vscroll window 0 t)
-            (set-window-start window top t)))))))
+pixels and the row after snap it back: a sawtooth as fast as the wheel turned.
+
+WINDOW defaults to the selected window, which is the one this runs for from
+the buffer's own hook; `cooked--note-scrolled-windows' passes the others."
+  (let ((window (or window (selected-window))))
+    (when (and cooked--session (not cooked--alt)
+               (or (not (eq window (selected-window))) (cooked--follow-p))
+               (eq (window-buffer window) (current-buffer)))
+      (let ((top (if cooked--pin-screen-top
+                     ;; A cleared display is shown from its top, below the
+                     ;; transcript it archived -- further down than the bottom
+                     ;; pin, and on purpose; see `cooked--scroll-transcript'.
+                     (max (cooked--bottom-start window)
+                          (cooked--screen-start-position))
+                   (cooked--bottom-start window)))
+            (start (window-start window)))
+        (when (or (> start top)
+                  (and (= start top) (> (window-vscroll window t) 0)))
+          (set-window-vscroll window 0 t)
+          (set-window-start window top t))))))
+
+;;;; Which windows follow
+;;
+;; Whether a window follows the output is a fact about that window, and it is
+;; the user's to change: a window follows until a command leaves it scrolled
+;; away from the bottom, and again once a command leaves it showing the bottom.
+;; It is written down, per window, after each command (`cooked-held'), and a
+;; drain reads it and never works it out.
+;;
+;; It used to be worked out, at each drain, from where the window's point was:
+;; on the live screen meant following.  A wheel turned over a window that is
+;; not the selected one moves that window's start and leaves its point on the
+;; screen for the first screenful, so such a window was pinned back to the
+;; bottom by the next drain -- under a program that prints steadily it could
+;; not be scrolled up at all, unless a dock had taken its bottom rows first.
+
+(defun cooked--foot ()
+  "The start of the last row with anything on it."
+  (save-excursion
+    (goto-char (point-max))
+    (skip-chars-backward " \t\n")
+    (line-beginning-position)))
+
+(defun cooked--shows-bottom-p (window)
+  "Whether WINDOW shows the whole of the last row with text.
+In pixels, from the window's start and its vertical scroll, rather than asked of
+`window-end', which is only as fresh as the last redisplay -- and this is asked
+between a command and the redisplay after it."
+  (let ((start (window-start window))
+        (foot (cooked--foot))
+        (seen (+ (window-body-height window t) (window-vscroll window t))))
+    (or (> start foot)
+        (<= (cooked--rows-height window start foot seen) seen))))
+
+(defun cooked--window-held-p (window)
+  "Whether WINDOW was left scrolled away from the bottom by a command.
+Such a window is being read, and output does not move it.
+
+The parameter holds the buffer it was said of: a window parameter outlives the
+buffer the window shows, and a window switched to another session has not been
+scrolled anywhere in that one."
+  (eq (window-parameter window 'cooked-held) (window-buffer window)))
+
+(defun cooked--hold-window (window held)
+  "Record whether WINDOW is HELD: scrolled away from the bottom of its buffer."
+  (set-window-parameter window 'cooked-held (and held (window-buffer window))))
+
+(defun cooked--release-window (window)
+  "Have WINDOW follow the output again, from now: its last row on the last line."
+  (cooked--hold-window window nil)
+  (let ((cursor (cooked--cursor-position)))
+    (cooked--pin-transcript-bottom (list window) cursor (point-max))))
+
+(defvar cooked--scroll-before nil
+  "Where each window on a terminal was scrolled to before the command now running.
+A list of (WINDOW START . VSCROLL), taken by `cooked--note-window-scrolls' and
+used up by `cooked--note-scrolled-windows'.")
+
+(defun cooked--session-windows ()
+  "The visible windows showing a live session, docks excepted, on any frame."
+  (seq-filter (lambda (window)
+                (and (buffer-local-value 'cooked--session (window-buffer window))
+                     (not (cooked--dock-window-p window))))
+              (window-list-1 nil 'no-minibuffer 'visible)))
+
+(defun cooked--note-window-scrolls ()
+  "Remember where every window on a terminal is scrolled to.
+On `pre-command-hook', globally."
+  (setq cooked--scroll-before
+        (mapcar (lambda (window)
+                  (cons window (cons (window-start window)
+                                     (window-vscroll window t))))
+                (cooked--session-windows))))
+
+(defun cooked--note-scrolled-windows ()
+  "Note which windows on a terminal the last command left scrolled away.
+
+Every visible window showing a session, whatever buffer is current: the wheel
+scrolls the window under the mouse, and a command in one frame can scroll a
+window in another.  On `post-command-hook', globally.
+
+Only a window the command *scrolled* is looked at -- one whose start or
+vertical scroll is not what `cooked--note-window-scrolls' found.  A window that
+was made shorter shows less than it did, its bottom row perhaps included, and
+nobody scrolled it: that is for `cooked--repin-resized' to put right, not a
+reader to be left alone.  It also keeps the measuring, which is in pixels, to
+the commands that scroll a terminal.
+
+A window that follows and is not the selected one has a scroll past the bottom
+undone here, as `cooked--clamp-overscroll' undoes it for the selected one.
+Without that, each notch of the wheel past the end moved the window down and
+the next drain moved it back, for as long as the wheel turned."
+  (let ((before (prog1 cooked--scroll-before (setq cooked--scroll-before nil))))
+    (dolist (window (cooked--session-windows))
+      (when-let* ((was (cdr (assq window before)))
+                  ((not (and (eql (car was) (window-start window))
+                             (eql (cdr was) (window-vscroll window t))))))
+        (with-current-buffer (window-buffer window)
+          (cooked--protect-hook
+            (let ((held (and (not cooked--alt)
+                             (not (cooked--shows-bottom-p window)))))
+              (cooked--hold-window window held)
+              (unless (or held cooked--alt (eq window (selected-window)))
+                (cooked--clamp-overscroll window)))))))))
 
 (defun cooked--pin-transcript-bottom (windows &optional pos bottom)
   "Follow POS, defaulting to `point-max\=', with the bottom row of each of WINDOWS.
@@ -830,7 +940,7 @@ and the region shaped before anything measures it."
   (let* ((inhibit-read-only t)
          (buffer-undo-list t)
          ;; Rows are rows: a `field' is an editing boundary, put up for the
-         ;; length of a command (see `cooked-program-line--fence'), and a drain
+         ;; length of a command (see `cooked--fence'), and a drain
          ;; that runs inside one must not find its line ends moved by it.
          (inhibit-field-text-motion t)
          (viewport (cooked--capture-viewport))
@@ -875,8 +985,7 @@ and the region shaped before anything measures it."
     (cooked--split-seam)
     (when cooked-debug (cooked--check-seam))
     (cooked--restore-pending-input pending)
-    (cooked--protect (or (and (cooked--input-state-p) (cooked--input-start-position))
-                         (point-max)))
+    (cooked--protect (and (cooked--input-state-p) (cooked--input-region)))
     (cooked--apply-alt-pin)
     ;; Before the point block, not after it: under evil this leaves visual state,
     ;; and evil adjusts point on the way into normal state -- so cooked's own pin

@@ -12,9 +12,10 @@
 ;;
 ;; - Point in the program's input -- the row its cursor is on: every key is the
 ;;   program's, exactly as in a terminal, except the few in
-;;   `cooked-navigation-keys' (by default `M-v' and `M-<'), which are the
-;;   way out into the output.  The mouse is the other way out: a click, or the
-;;   wheel.
+;;   `cooked-navigation-keys', which are the way out into the output.  The mouse
+;;   is the other way out: a click, or the wheel.  A program that is asking
+;;   something rather than reading its line gets some of those back; see
+;;   `cooked-navigation-yield-keys'.
 ;;
 ;; - Point anywhere else: the buffer is an ordinary read-only Emacs buffer.  Every
 ;;   motion, search, mark and copy command works on the output, and the output
@@ -54,6 +55,7 @@
 (declare-function cooked-previous-input "cooked-mode" (&optional n))
 (declare-function cooked-next-input "cooked-mode" (&optional n))
 (declare-function cooked-dock-select-input "cooked-dock" ())
+(declare-function cooked--window-held-p "cooked-render" (window))
 
 (defcustom cooked-navigable-programs t
   "Which programs' output is read with ordinary Emacs commands while they run.
@@ -101,13 +103,41 @@ input necessarily is.  \\`M-v' and \\`M-<' are the other ways out.
 Every entry takes a key away from the program: a readline-based program loses
 \\`M-<' (beginning of history) and \\`C-r' (history search), and a program with
 its own \\`M-p' (an agent's model picker, say) or \\`C-s' loses that, as does
-one with its own kill buffer on \\`C-y'.  \\[cooked-send-literal-key] followed by the key still sends it."
+one with its own kill buffer on \\`C-y'.  \\[cooked-send-literal-key] followed by the key still sends it.
+
+The keys in `cooked-navigation-yield-keys' go back to a program that is known
+to be asking something rather than reading its line."
   :type '(alist :key-type (string :tag "Key") :value-type (function :tag "Command"))
   :set (lambda (symbol value)
          (set-default symbol value)
          (when (fboundp 'cooked-navigate--rebuild-input-map)
            (cooked-navigate--rebuild-input-map)))
   :group 'cooked)
+
+(defcustom cooked-navigation-yield-keys '("C-p" "C-n")
+  "Keys of `cooked-navigation-keys' the program gets back while it is asking.
+
+Each is a `kbd' string naming a key in that list.  A program showing a menu or
+a question in place of its input moves through it with the same keys Emacs
+moves by line with, and there the program must have them: \\`C-p' taken as a
+motion leaves a menu unanswered.  So while `cooked-navigate-yield-function'
+says the program is not at its line, these go to it like any other key.
+
+Nothing says so by default, and then this list does nothing; with
+`cooked-program-line-editor' at `emacs' the program's line is watched, and it
+is known when the program has left it."
+  :type '(repeat string)
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (fboundp 'cooked-navigate--rebuild-input-map)
+           (cooked-navigate--rebuild-input-map)))
+  :group 'cooked)
+
+(defvar-local cooked-navigate-yield-function nil
+  "Function saying whether the program is somewhere other than at its line.
+Called with no arguments in the session's buffer when a key in
+`cooked-navigation-yield-keys' is looked up; non-nil gives the program the
+key.  For a layer that can tell -- nothing here can.")
 
 (defvar-local cooked-navigate--applies nil
   "Whether this buffer's child is one whose output is navigated by point.
@@ -122,11 +152,19 @@ Set and cleared only by the user's own commands -- see
 happens to be.  Output moves the program's cursor between commands, and a
 point that has not caught up with it yet has not gone anywhere.")
 
-(defvar-local cooked-navigate--start nil
-  "The selected window's start before the current command, if it shows us.")
+(defvar-local cooked-navigate--before nil
+  "What the command now running found: (WINDOW POINT . SCROLL), or nil.
 
-(defvar-local cooked-navigate--point nil
-  "Point before the current command.")
+WINDOW is the selected window, POINT is point, and SCROLL is that window's
+`cooked-navigate--scroll', or nil when it was not showing this buffer.
+
+For the one command it was taken before, and no other.  It is taken on
+`pre-command-hook' and used up on `post-command-hook', and a command that
+began in another buffer and ended in this one -- `other-window', a click from
+another window -- finds nil here, not what was left by whichever command last
+ran in this buffer.  Compared with that, a screen that had since grown shorter
+read as a window scrolled up to be read: the keys went to Emacs, and a
+question the program had put up meanwhile could not be answered.")
 
 (defvar-local cooked-navigate--input-active nil
   "Whether `cooked-navigate-input-map' is in force.")
@@ -151,11 +189,28 @@ RET goes back to the input without sending anything: a Return typed while
 reading is far more likely to mean \"take me back\" than \"submit whatever is in
 the prompt\", and the second is one more RET away.")
 
+(defun cooked-navigate--yield-p ()
+  "Whether the keys in `cooked-navigation-yield-keys' are the program's now."
+  (and cooked-navigate-yield-function
+       (condition-case nil
+           (funcall cooked-navigate-yield-function)
+         (error nil))))
+
 (defun cooked-navigate--rebuild-input-map ()
-  "Rebuild `cooked-navigate-input-map' from `cooked-navigation-keys'."
+  "Rebuild `cooked-navigate-input-map' from `cooked-navigation-keys'.
+
+A key in `cooked-navigation-yield-keys' is bound through a filter that answers
+nothing while the program is asking: the lookup then goes on past this map, to
+whatever the buffer forwards that key with."
   (setcdr cooked-navigate-input-map nil)
   (pcase-dolist (`(,key . ,command) cooked-navigation-keys)
-    (define-key cooked-navigate-input-map (kbd key) command)))
+    (define-key cooked-navigate-input-map (kbd key)
+                (if (member (kbd key) (mapcar #'kbd cooked-navigation-yield-keys))
+                    `(menu-item "" ,command
+                                :filter ,(lambda (binding)
+                                           (unless (cooked-navigate--yield-p)
+                                             binding)))
+                  command))))
 
 (cooked-navigate--rebuild-input-map)
 
@@ -243,12 +298,14 @@ Called at the end of `cooked--refresh-keymap'."
 ;;;; Following point
 
 (defun cooked-navigate--pre-command ()
-  "Remember point and the window's start, for `cooked-navigate--post-command'."
-  (when cooked-navigate--applies
-    (setq cooked-navigate--point (point)
-          cooked-navigate--start
-          (and (eq (window-buffer (selected-window)) (current-buffer))
-               (cooked-navigate--scroll (selected-window))))))
+  "Remember point and the window's scroll, for `cooked-navigate--post-command'."
+  (setq cooked-navigate--before
+        (and cooked-navigate--applies
+             (let ((window (selected-window)))
+               (cons window
+                     (cons (point)
+                           (and (eq (window-buffer window) (current-buffer))
+                                (cooked-navigate--scroll window))))))))
 
 (defun cooked-navigate--scroll (window)
   "WINDOW's scroll position: its start, and how far it is scrolled past it.
@@ -261,44 +318,72 @@ moves the vertical scroll many times before it moves the start at all."
   (or (> (car a) (car b))
       (and (= (car a) (car b)) (> (cdr a) (cdr b)))))
 
+(defun cooked-navigate--placed-point-p (window)
+  "Whether the command just run was a click of the mouse in WINDOW.
+The one way a command that began in another buffer says where point should be."
+  (and (mouse-event-p last-command-event)
+       (eq (posn-window (event-start last-command-event)) window)))
+
 (defun cooked-navigate--post-command ()
-  "Decide whether the command just run left the input or came back to it."
-  (when (and cooked-navigate--applies cooked--session (not cooked--alt)
-             (not cooked--peek-explicit))
-    (cooked--protect-hook
-      (let* ((window (selected-window))
-             (before cooked-navigate--start)
-             (after (and (eq (window-buffer window) (current-buffer))
-                         (cooked-navigate--scroll window)))
-             (moved (not (eql (point) cooked-navigate--point)))
-             (cursor (cooked--cursor-position)))
-        (if cooked-navigate--reading
-            (cond
-             ;; Scrolled toward the end until the input is in view again.
-             ((and before after (cooked-navigate--later-p after before)
-                   (pos-visible-in-window-p cursor window)
-                   (pos-visible-in-window-p (point-max) window))
-              (setq cooked-navigate--reading nil)
-              (goto-char (cooked--point-after-input)))
-             ;; Moved onto the input row: back to the program, at its cursor
-             ;; rather than wherever on the row the motion landed.  A line Emacs
-             ;; owns is edited where point is, so there point stays.
-             ((and moved (cooked-navigate--at-input-p))
-              (setq cooked-navigate--reading nil)
-              (unless (cooked--input-region)
-                (goto-char cursor))))
-          (when (or
-                 ;; Scrolled up off the bottom, even with point still in the
-                 ;; input -- or live output would scroll the window straight back.
-                 ;; Not a recentre, which is about where point sits in the
-                 ;; window rather than about looking elsewhere.
-                 (and before after (cooked-navigate--later-p before after)
-                      (not (memq this-command '(recenter recenter-top-bottom))))
-                 (and moved (not (cooked-navigate--at-input-p))))
-            (setq cooked-navigate--reading t)))
-        (unless (eq cooked-navigate--reading cooked-navigate--reading-active)
-          (cooked--refresh-keymap t)
-          (setq cooked--point (point)))))))
+  "Decide whether the command just run left the input or came back to it.
+
+By what the command itself did -- where it moved point, how it scrolled the
+window -- and so only against `cooked-navigate--before' as that command found
+it.  A command with nothing to compare with changed nothing, unless it was a
+click, which puts point where the user pointed."
+  (let ((found (prog1 cooked-navigate--before
+                 (setq cooked-navigate--before nil))))
+    (when (and cooked-navigate--applies cooked--session (not cooked--alt)
+               (not cooked--peek-explicit))
+      (cooked--protect-hook
+        (let* ((window (selected-window))
+               (same (eq (car found) window))
+               (before (and same (cddr found)))
+               (after (and before
+                           (eq (window-buffer window) (current-buffer))
+                           (cooked-navigate--scroll window)))
+               (moved (if found
+                          (not (eql (point) (cadr found)))
+                        (cooked-navigate--placed-point-p window)))
+               (cursor (cooked--cursor-position)))
+          ;; Come in from another buffer, by a key: the window is the one to
+          ;; ask.  One left scrolled away from the bottom -- by the wheel,
+          ;; while it was not the selected one -- is being read; one showing
+          ;; the bottom is not, unless point was parked in the output.
+          (when (and (null found) (not moved)
+                     (eq (window-buffer window) (current-buffer)))
+            (setq cooked-navigate--reading
+                  (and (or (cooked--window-held-p window)
+                           (and cooked-navigate--reading
+                                (not (cooked-navigate--at-input-p))))
+                       t)))
+          (if cooked-navigate--reading
+              (cond
+               ;; Scrolled toward the end until the input is in view again.
+               ((and before after (cooked-navigate--later-p after before)
+                     (pos-visible-in-window-p cursor window)
+                     (pos-visible-in-window-p (point-max) window))
+                (setq cooked-navigate--reading nil)
+                (goto-char (cooked--point-after-input)))
+               ;; Moved onto the input row: back to the program, at its cursor
+               ;; rather than wherever on the row the motion landed.  A line Emacs
+               ;; owns is edited where point is, so there point stays.
+               ((and moved (cooked-navigate--at-input-p))
+                (setq cooked-navigate--reading nil)
+                (unless (cooked--input-region)
+                  (goto-char cursor))))
+            (when (or
+                   ;; Scrolled up off the bottom, even with point still in the
+                   ;; input -- or live output would scroll the window straight back.
+                   ;; Not a recentre, which is about where point sits in the
+                   ;; window rather than about looking elsewhere.
+                   (and before after (cooked-navigate--later-p before after)
+                        (not (memq this-command '(recenter recenter-top-bottom))))
+                   (and moved (not (cooked-navigate--at-input-p))))
+              (setq cooked-navigate--reading t)))
+          (unless (eq cooked-navigate--reading cooked-navigate--reading-active)
+            (cooked--refresh-keymap t)
+            (setq cooked--point (point))))))))
 
 ;;;; Commands
 

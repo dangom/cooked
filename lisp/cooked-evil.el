@@ -323,6 +323,27 @@ on everything the emulator owns, so the property is the question."
                                      (min (evil-range-end range) (point-max))
                                      'read-only nil)))))
 
+(defun cooked-evil--visual-overhangs-input-p ()
+  "Whether the selection is the line being typed and nothing else that matters.
+
+\\`v $\=' selects to the end of the line *and its newline*, as in vim, and the
+newline after the pending input is the child\='s: read-only, like everything
+that is not the input (see `cooked--protect\=').  So a selection that begins in
+the input and runs past its end is still a selection of the input when what it
+takes in beyond the end has no case to change -- the newline, the blank a
+program draws for its cursor.  Anything with letters in it is the child\='s
+text and is not this."
+  (when-let* ((region (cooked--input-region))
+              (range (evil-visual-range))
+              (beg (evil-range-beginning range))
+              (end (min (evil-range-end range) (point-max))))
+    (and (not buffer-read-only)
+         (<= (car region) beg (cdr region))
+         (> end (cdr region))
+         (not (text-property-not-all beg (cdr region) 'read-only nil))
+         (let ((beyond (buffer-substring-no-properties (cdr region) end)))
+           (string= (upcase beyond) (downcase beyond))))))
+
 (defun cooked-evil-visual-case ()
   "Change the case of the visual selection, unless it is the child\='s text.
 
@@ -345,15 +366,23 @@ state are left alone: they signal for the same reason, but a signal in normal
 state costs a message rather than a state evil cannot see out of, and \"Buffer
 is read-only\" over a program\='s screen is a true thing to say."
   (interactive)
-  (if (cooked-evil--visual-writable-p)
-      (call-interactively (pcase last-command-event
-                            (?u #'evil-downcase)
-                            (?U #'evil-upcase)
-                            (_ #'evil-invert-char)))
-    (message "cooked: %s"
-             (if buffer-read-only
-                 "the buffer is read-only while the render is suspended"
-               "that is the child's text, not yours to edit"))))
+  (let ((command (pcase last-command-event
+                   (?u #'evil-downcase)
+                   (?U #'evil-upcase)
+                   (_ #'evil-invert-char))))
+    (cond
+     ((cooked-evil--visual-writable-p)
+      (call-interactively command))
+     ;; The line and the caseless character or two after it: nothing of the
+     ;; child's changes, so the protection has nothing to protect.
+     ((cooked-evil--visual-overhangs-input-p)
+      (let ((inhibit-read-only t))
+        (call-interactively command)))
+     (t
+      (message "cooked: %s"
+               (if buffer-read-only
+                   "the buffer is read-only while the render is suspended"
+                 "that is the child's text, not yours to edit"))))))
 
 (declare-function evil-first-non-blank "ext:evil-commands")
 (declare-function evil-insert-line "ext:evil-commands")

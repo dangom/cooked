@@ -271,6 +271,11 @@ it, are `comint-input-ring' and `comint-input-ring-index'.")
 ;; then the next key sent puts point back, because the child was always going to
 ;; act at its own cursor whatever Emacs was showing.
 
+(defvar-local cooked--command-point nil
+  "Point before the command now running, for `cooked--refused'.
+Nil between commands, and during one that began in another buffer: cleared by
+`cooked--track-wandering', so it is never an older command's.")
+
 (defun cooked--track-wandering ()
   "Notice a command moving point off the child's cursor, or back onto it.
 
@@ -307,7 +312,9 @@ nothing is drained, so a redraw cannot be what discovers that point has moved."
     ;; The other half of `cooked--point': a command moving point is the second way
     ;; it moves, and a buffer the user leaves without a drain in between must
     ;; remember where they left it rather than where the last drain did.
-    (setq cooked--point (point))
+    (setq cooked--point (point)
+          ;; The command it was noted for is over; see `cooked--refused'.
+          cooked--command-point nil)
     (cooked--sync-cursor-type)
     (cooked--update-ghost-cursor)))
 
@@ -327,7 +334,14 @@ whatever Emacs is showing, and the ghost has been marking that spot."
     ;; With a dock the input is already in view: type there, and leave the
     ;; window being read where it is.  See cooked-dock.el.
     (unless (cooked-dock-select-input)
-      (goto-char (cooked--cursor-position)))
+      (goto-char (cooked--cursor-position))
+      ;; And the window with it, now: it is not for the next drain to find
+      ;; that a window left scrolled up is following again.
+      (let ((window (selected-window)))
+        (when (and (eq (window-buffer window) (current-buffer))
+                   (cooked--window-held-p window)
+                   (not cooked--alt))
+          (cooked--release-window window))))
     (setq cooked--wandered nil)
     (cooked--update-ghost-cursor)))
 
@@ -883,6 +897,29 @@ against the state it will actually run in."
         (when-let* ((equivalent (alist-get this-command cooked--child-equivalents)))
           (setq this-command equivalent))))))
 
+(defun cooked--note-command-point ()
+  "Remember where point is before a command runs."
+  (setq cooked--command-point (point)))
+
+(defun cooked--refused (data)
+  "Put point back where it was before a command that was refused its edit.
+
+DATA is the error the command signalled.  Nearly all of a cooked buffer is the
+child's text and read-only, so a kill or a deletion tried on it is refused --
+but most such commands find the far end of what they would remove by *moving
+there* first, and are refused only afterwards: \\`C-k' in the output left point
+at the end of the line, as if it had been a motion.  A command that changed
+nothing should have moved nothing."
+  (when (and (memq (car-safe data) '(text-read-only buffer-read-only))
+             cooked--command-point)
+    (goto-char (min cooked--command-point (point-max)))))
+
+(defun cooked--command-error (handler data context caller)
+  "Run `cooked--refused' on DATA, then HANDLER on DATA, CONTEXT and CALLER.
+Around `command-error-function', in cooked buffers."
+  (cooked--protect-hook (cooked--refused data))
+  (funcall handler data context caller))
+
 (defun cooked--set-mode (mode)
   "Adopt MODE, switching keymaps and handling secret prompts on a change."
   (unless (eq mode cooked--mode)
@@ -980,6 +1017,9 @@ render half of the mode, which no keymap carries."
          ;; take keys away from a line editor that wants them.
          ((or 'command 'prompt) (cooked--forwarding-map cooked-command-map))
          (_ (cooked--forwarding-map cooked-raw-map))))))
+
+;; Defined with the resize code below, which is the one writer.
+(defvar cooked--resize-deferred)
 
 (defvar cooked--quiet-refresh nil
   "Whether the refresh under way was asked for quietly.
@@ -1441,7 +1481,29 @@ which it usually is not.  Walk the frame's windows instead."
     (with-current-buffer (window-buffer window)
       (when cooked--session
         (cooked--sync-size)
-        (cooked--repin-resized window)))))
+        (cooked--repin-resized window)
+        (cooked--keep-reading-place window)))))
+
+(defun cooked--keep-reading-place (window)
+  "Keep WINDOW on the text it starts with when it is made shorter while read.
+
+A window scrolled away from the bottom keeps its start through a resize, as any
+window does -- until redisplay finds point below the new bottom edge, and
+scrolls to bring it back.  Point in a window being read is wherever the last
+scroll left it, often on the last row, so a minibuffer growing to list
+completions, or a pop-up, moved what was being read up by as many rows as it
+took; and when it went away the window grew back around the new place, not the
+old.  Point is moved onto the last row still showing instead, which costs
+nothing that is being looked at, and the start stays."
+  (when (and (cooked--window-held-p window)
+             (not cooked--alt)
+             (not (cooked--dock-window-p window)))
+    (let ((last (cooked-dock--row
+                 window (max 0 (1- (car (cooked-dock--visible-rows window)))))))
+      (when (> (window-point window) last)
+        (if (eq window (selected-window))
+            (goto-char last)
+          (set-window-point window last))))))
 
 (defun cooked--repin-resized (window)
   "Put WINDOW's last row back on its last line, if WINDOW follows the output.
@@ -1457,6 +1519,7 @@ the same hook that tells the child, whether or not the child answers."
              (cooked--follow-p)
              (not (cooked--dock-window-p window))
              (not (window-live-p (window-parameter window 'cooked-dock)))
+             (not (cooked--window-held-p window))
              (>= (window-point window)
                  (or (cooked--screen-start-position) (point-max))))
     (cooked--pin-transcript-bottom (list window) (window-point window)
@@ -1594,6 +1657,10 @@ whatever it showed when the freeze began until something else asked."
 (defun cooked--install-global-hooks ()
   "Install the hooks that cannot be buffer-local."
   (add-hook 'window-size-change-functions #'cooked--frame-size-changed)
+  ;; Which windows a command scrolled, whatever buffer it ran in.  Ahead of
+  ;; every other `post-command-hook' of ours, which read the answer.
+  (add-hook 'pre-command-hook #'cooked--note-window-scrolls)
+  (add-hook 'post-command-hook #'cooked--note-scrolled-windows -10)
   ;; The other half of `cooked-defer-resize-in-minibuffer'.
   (add-hook 'minibuffer-exit-hook #'cooked--minibuffer-exited)
   ;; Exiting Emacs kills no buffers, so `kill-buffer-hook' -- where every other
@@ -2284,8 +2351,13 @@ to the child verbatim."
   ;; `this-command', and the snap reads `this-command' to decide whether to move
   ;; point at all.  Run the other way round, a substituted command would be
   ;; snapped against the command it replaced.
+  (add-hook 'pre-command-hook #'cooked--note-command-point -90 t)
+  (add-function :around (local 'command-error-function) #'cooked--command-error)
   (add-hook 'pre-command-hook #'cooked--guard-insertion -50 t)
   (add-hook 'pre-command-hook #'cooked--snap-to-input nil t)
+  ;; Last before the command and first after it, so no other hook sees a fence.
+  (add-hook 'pre-command-hook #'cooked--fence 95 t)
+  (add-hook 'post-command-hook #'cooked--unfence -95 t)
   (add-hook 'post-command-hook #'cooked--track-wandering nil t)
   ;; From the same hook and for the same reason: the user's own commands produce
   ;; no output, so a drain is never what discovers that one of them scrolled the
@@ -2727,7 +2799,11 @@ replaces."
   (let ((start (and (eql (or n 1) 1) (cooked--input-line-start))))
     (if (and start (> (point) start))
         (goto-char start)
-      (move-beginning-of-line n))))
+      ;; Past the fence `cooked--fence' has up for this command: the second
+      ;; press is the one that asks for the line, prompt included.  Not over a
+      ;; program's line, which has no column 0 worth reaching.
+      (let ((inhibit-field-text-motion (not cooked--program-line)))
+        (move-beginning-of-line n)))))
 
 (defun cooked--input-line-end ()
   "Where the pending input ends, if point is in it and on the line it ends on.
@@ -2755,7 +2831,8 @@ press goes on to the end of the row the way a second
   (let ((end (and (eql (or n 1) 1) (cooked--input-line-end))))
     (if (and end (< (point) end))
         (goto-char end)
-      (move-end-of-line n))))
+      (let ((inhibit-field-text-motion (not cooked--program-line)))
+        (move-end-of-line n)))))
 
 (defun cooked-kill-line (&optional arg)
   "Kill the rest of the line being typed, as `kill-line\=' does.

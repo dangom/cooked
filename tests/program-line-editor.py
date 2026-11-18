@@ -8,6 +8,11 @@ reported, C-a takes the alternate screen, and C-b redraws the prompt, as a statu
 update would.  Like an agent, it draws a cursor
 of its own after the line, a suggestion after that while the line is empty, and
 a status row under it, so the screen goes on past where it reads.
+
+C-q makes it ask a question, as an agent does part-way through its work: the
+prompt is replaced by a list, the Up and Down keys (or C-p and C-n) move through
+it, and Enter picks.  Its own line is kept, and comes back with the prompt.  The
+Up key at the prompt recalls `recalled', as a history would.
 """
 
 import os
@@ -29,6 +34,26 @@ for i in range(1, 61):
 
 line = ''
 menu = False
+question = False
+choice = 0
+OPTIONS = ('red', 'blue', 'green')
+
+
+def ask(redraw=None):
+    # From the prompt's row, or with REDRAW from the row of the option that
+    # was chosen: the question, then the cursor parked on the chosen option.
+    if redraw is not None:
+        write('\x1b[%dA' % (1 + redraw))
+    write('\r\x1b[JPick one:\r\n'
+          + ''.join(('* ' if i == choice else '  ') + name + '\r\n'
+                    for i, name in enumerate(OPTIONS))
+          + '\x1b[%dA\r' % (len(OPTIONS) - choice))
+
+
+def move(by):
+    global choice
+    was, choice = choice, max(0, min(len(OPTIONS) - 1, choice + by))
+    ask(was)
 
 
 def prompt():
@@ -67,10 +92,25 @@ while True:
             i = 2
             while i < len(pending) and not 0x40 <= pending[i] <= 0x7e:
                 i += 1
-            pending = pending[i + 1:]
+            final, pending = pending[i:i + 1], pending[i + 1:]
+            if question and final in (b'A', b'B'):
+                move(-1 if final == b'A' else 1)
+            elif final == b'A' and not menu and not line:
+                line = 'recalled'
+                prompt()
             continue
         byte, pending = pending[:1], pending[1:]
-        if byte == b'\x1b':
+        if question:
+            if byte in (b'\x10', b'\x0e'):
+                move(-1 if byte == b'\x10' else 1)
+            elif byte == b'\r':
+                question = False
+                write('\x1b[%dA\r\x1b[J' % (1 + choice))
+                report('picked ' + OPTIONS[choice])
+        elif byte == b'\x11':
+            question, choice = True, 0
+            ask()
+        elif byte == b'\x1b':
             report('got escape')
         elif byte == b'\x01':
             write('\x1b[?1049h\x1b[Halt screen')

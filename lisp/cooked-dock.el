@@ -46,6 +46,10 @@
 (declare-function cooked--pin-transcript-bottom "cooked-render"
                   (windows &optional pos bottom))
 (declare-function cooked--bottom-start "cooked-render" (window &optional foot))
+(declare-function cooked--foot "cooked-render" ())
+(declare-function cooked--keep-reading-place "cooked-mode" (window))
+(declare-function cooked--window-held-p "cooked-render" (window))
+(declare-function cooked--release-window "cooked-render" (window))
 (declare-function cooked--rows-height "cooked-render" (window from to &optional limit))
 (defvar cooked--after-scroll-hook)
 
@@ -84,13 +88,6 @@ A window too short to leave the rest for reading is not docked at all."
        cooked--session
        (not cooked--alt)))
 
-(defun cooked-dock--foot ()
-  "The start of the last row with anything on it."
-  (save-excursion
-    (goto-char (point-max))
-    (skip-chars-backward " \t\n")
-    (line-beginning-position)))
-
 (defun cooked-dock--live-top ()
   "The start of the first live row: the cursor's, less the context rows."
   (let ((screen (or (cooked--screen-start-position) (point-min))))
@@ -101,7 +98,7 @@ A window too short to leave the rest for reading is not docked at all."
 
 (defun cooked-dock--rows ()
   "How many rows the live region spans."
-  (let ((foot (cooked-dock--foot))
+  (let ((foot (cooked--foot))
         (top (cooked-dock--live-top)))
     (if (< foot top) 1 (1+ (count-lines top foot)))))
 
@@ -130,7 +127,7 @@ protect, and keeps the nominal size."
     (if (< rows (cooked-dock--rows))
         nominal
       (max nominal (cooked--rows-height window (cooked-dock--live-top)
-                                        (cooked-dock--foot))))))
+                                        (cooked--foot))))))
 
 (defun cooked-dock--pixels (window rows)
   "The total pixel height of a window on WINDOW's buffer showing ROWS rows."
@@ -184,7 +181,7 @@ protect, and keeps the nominal size."
 (defun cooked-dock--pin (dock)
   "Show the live rows in DOCK: its last row on the last row with text."
   (with-current-buffer (window-buffer dock)
-    (let ((top (cooked--bottom-start dock (cooked-dock--foot))))
+    (let ((top (cooked--bottom-start dock (cooked--foot))))
       (unless (eq dock (selected-window))
         (set-window-point dock (max top (cooked--cursor-position))))
       (unless (zerop (window-vscroll dock t))
@@ -246,7 +243,11 @@ narrow moment wrapped its input to went on showing transcript above it."
         (with-current-buffer (window-buffer window)
           (when cooked--session
             (cooked-dock--refit window)
-            (cooked-dock--pin window)))))))
+            (cooked-dock--pin window)
+            ;; The refit takes its rows from the window above, which is being
+            ;; read: after it, not before, is when that window's last row is
+            ;; known.
+            (cooked--keep-reading-place (cooked-dock--main window))))))))
 
 (defun cooked-dock--max-rows (window)
   "The most rows a dock under WINDOW may take."
@@ -267,17 +268,6 @@ rather than asked of `window-end', which is only as fresh as the last redisplay
   (let* ((lh (window-default-line-height window))
          (px (+ (window-body-height window t) (window-vscroll window t))))
     (cons (/ px lh) (/ (+ px lh -1) lh))))
-
-(defun cooked-dock--shows-bottom-p (window)
-  "Whether WINDOW, undocked, shows the whole of the last row with text.
-In pixels, from the window's start and its vertical scroll, rather than asked of
-`window-end', which is only as fresh as the last redisplay -- and these
-questions are asked between a command and the redisplay after it."
-  (let ((start (window-start window))
-        (foot (cooked-dock--foot))
-        (seen (+ (window-body-height window t) (window-vscroll window t))))
-    (or (> start foot)
-        (<= (cooked--rows-height window start foot seen) seen))))
 
 (defun cooked-dock--reached-p (window)
   "Whether docked WINDOW has been scrolled down into its dock's rows.
@@ -307,9 +297,7 @@ row, and the two are put back together where they meet."
         (setq cooked-navigate--reading nil)
         (goto-char (cooked--cursor-position))
         (cooked--refresh-keymap t))
-      (set-window-point window (cooked--cursor-position))
-      (cooked--pin-transcript-bottom (list window) (cooked--cursor-position)
-                                     (point-max)))))
+      (cooked--release-window window))))
 
 (defun cooked-dock--detach (window)
   "Dock WINDOW's live rows, if it is tall enough to keep reading above them."
@@ -341,7 +329,9 @@ row, and the two are put back together where they meet."
         (cooked-dock--resize dock (min (cooked-dock--rows)
                                        (cooked-dock--max-rows window)))
         (cooked-dock--pin dock)))
-     ((not (cooked-dock--shows-bottom-p window))
+     ;; Scrolled away from the bottom: `cooked--note-scrolled-windows' has
+     ;; just said so, for this command, and is the one that measures.
+     ((cooked--window-held-p window)
       (cooked-dock--detach window)))))
 
 (defun cooked-dock--windows ()

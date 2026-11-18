@@ -1564,12 +1564,60 @@ whatever the program draws for an empty line -- a cursor of its own, a suggestio
 the program's rows below. The tail is hidden by an overlay, so there is one cursor and
 only the user's text. Line commands have to stop at the line's edges whoever wrote them
 (Doom binds `C-a` to its own command, which no remap of `move-beginning-of-line`
-reaches), so the edges are `field` boundaries, as comint's prompts are, and what follows
-the line is read-only. Fields change what `line-beginning-position` answers, which the
-renderer asks about every row, so they exist only for the length of a command:
-`cooked-program-line--fence` puts them up last on `pre-command-hook` and
-`cooked-program-line--unfence` takes them down first on `post-command-hook`, and
-`cooked--apply` binds `inhibit-field-text-motion` for a drain that runs inside one.
+reaches), so the edges are `field` boundaries, as comint's prompts are. Fields change
+what `line-beginning-position` answers, which the renderer asks about every row, so they
+exist only for the length of a command: `cooked--fence` puts them up last on
+`pre-command-hook` and `cooked--unfence` takes them down first on
+`post-command-hook`, and `cooked--apply` binds `inhibit-field-text-motion` for a drain
+that runs inside one.
+
+The fence is `cooked--fence`, in the core, and is up for every line Emacs owns: a shell's
+prompt as much as a program's. At a shell prompt it used to be absent, and killing words
+back faster than there were words ran into the prompt and signalled. Two commands look
+past it on purpose: a second `C-a` or `C-e` at a shell prompt, which is the documented
+way to column 0 and to the end of the row, and evil's `0` and `gI`
+(`cooked-unfenced-commands`). An empty line needs one more thing. It is a place between
+two fields, and Emacs gives a place that neither neighbouring field is sticky towards no
+field of its own, so a motion from it goes straight through; for the length of the
+command the field after an empty line is made front-sticky.
+
+Fields say where a command stops. What a command may *change* is a separate matter and
+is not arranged per command: see "Only the pending input is editable" below. The fence
+once did both, adding `read-only` after the line for the length of a command, and that
+was the source of a "Text is read-only" on ordinary typing. The character after a line
+just taken had been the program's a moment before and still carried
+`front-sticky (read-only)`; the fence made it read-only again, and an insertion before a
+read-only, front-sticky character is refused. The next key typed at the end of the line
+failed until the program had redrawn the row.
+
+**Where the program's line is.** The place a line is taken at is remembered
+(`cooked-program-line--anchor`): the cursor's column, and the text the program had drawn
+before it on that row. It is the one moment a program shows where it reads, and it is
+learned rather than recognised -- nothing knows what a prompt looks like. Three things
+are decided against it, each of which was a bug without it:
+
+- *A question over a draft.* An agent puts a question where its prompt was while a line
+  for it is half typed. Every drain puts the pending input back at the cursor, so the
+  draft was planted in the question (`my draft❯ 1. Red`, the rest of that row hidden as
+  the line's tail), and the keyboard stayed Emacs': the arrows moved point and the
+  question could not be answered. Now a drain that finds the cursor off the anchor hides
+  the line at once (`cooked-program-line--veil`), and if the cursor stays away for
+  `cooked-program-line-away-delay` the line is set aside: taken out of the buffer, kept
+  in `cooked-program-line--aside`, and the policy is the program's again. A drain that
+  finds the cursor back at the anchor puts it back. The delay is for a redraw caught
+  half-way, which moves the cursor too; during it the line is hidden but still typed
+  into. Measured against Claude Code 2.1.322 streaming 25 lines with a draft being
+  typed: the cursor was at the anchor in all 141 drains.
+- *A line that is not empty.* A character echoed into a line the program already holds
+  -- recalled from its history, pasted, completed -- is not a line to take: Emacs would
+  own the last character of something it never saw. Any key sent to the program that is
+  not typing marks the line the program's (`cooked-program-line--held`), unless it
+  plainly does nothing to an empty line. It is cleared by a key that ends a line, or
+  when the cursor is seen back at the anchor once the program has had
+  `cooked-program-line--settle-time` to act on the last key. Every command that sends
+  comes through one place for this: `cooked--send-to-child` counts, and
+  `cooked-program-line--post-command` compares the count across the command.
+- *Keys a menu needs.* See `cooked-navigation-yield-keys` under cooked-navigate.el.
 
 Shells are excluded twice over. A shell keeping its own prompt (`cooked-shell-line-editor`
 `shell`) is `prompt` to `cooked--child-policy`, never `raw` or `command`; a shell without
@@ -1684,6 +1732,109 @@ about looking elsewhere.
 right — the user stepped out of a program to look, and RET continues. Here the user is in
 the transcript of a conversation, and a RET that submitted whatever was half-typed in the
 prompt would be the worst reading of the key.
+
+**What a command is compared with is what that command found.** "What they were before
+the command" has to mean before *this* command, in *this* window. The snapshot was two
+buffer-local variables written on `pre-command-hook` and read on `post-command-hook`,
+and a buffer-local `pre-command-hook` only runs for a command that starts in the buffer.
+`other-window` into a terminal, or a click from another window, ran the post-command
+half alone, against whatever the last command to *start* there had left -- minutes old.
+A screen that had grown shorter in between has an earlier window start, which reads as
+"scrolled up": the buffer went into `still`, and RET and the arrows stopped reaching the
+program. An agent replacing its prompt with a question is exactly a screen growing
+shorter, and switching to its window is exactly what one does then.
+`cooked-navigate--before` is now one value, taken before a command and used up after it,
+and it names the window it was taken in. A command that finds nothing to compare with
+concludes nothing, unless it was a click in this window, which says where point should
+be on its own. `cooked--command-point` (below) is cleared the same way.
+
+**Some of the keys go back to a program that is asking.** `C-p` and `C-n` are in
+`cooked-navigation-keys` so that a program's input behaves like a prompt: `C-p` steps up
+into the output. A program showing a menu in place of its input moves through it with
+the same keys, and there one `C-n` taken as a motion both failed to move the menu and
+started reading, after which nothing reached it. `cooked-navigation-yield-keys` names
+the keys this applies to, and `cooked-navigate-yield-function` is the seam that says
+when: bound through a `menu-item` `:filter` in `cooked-navigate-input-map`, a yielded key
+has no binding there and the lookup falls through to the forwarding map.
+cooked-navigate.el cannot tell a menu from an empty prompt and sets no function;
+cooked-program-line.el can, once it has seen where the program's line is, and sets
+`cooked-program-line--asking-p`. Until a line has been taken in a session nothing is
+known and the keys are Emacs', as before.
+
+## Which windows follow: said by commands, per window
+
+Whether a window follows the output is a fact about that window, and only the user
+changes it. It is written down per window after each command
+(`cooked--note-scrolled-windows`, the `cooked-held` window parameter) and a drain reads
+it; a drain never works it out.
+
+It used to be worked out at each drain, from where the window's point was: on the live
+screen meant following. That is right for the selected window, whose reading state
+cooked-navigate.el keeps, and wrong for every other. The wheel scrolls the window under
+the mouse whichever window is selected, and moves that window's start while its point
+stays on the live screen for the first screenful. So a terminal scrolled up with focus
+elsewhere was pinned back to the bottom by the next drain, and under a program printing
+steadily could not be scrolled up at all -- unless a dock had taken its bottom rows
+first, which needs a window tall enough and an input short enough. Measured with
+ultra-scroll in a 16-row window against a program printing ten lines a second: before,
+the window never got more than seven rows from the bottom; after, zero samples in which
+output moved it.
+
+Three details:
+
+- *Only a window the command scrolled is judged.* `cooked--note-window-scrolls` takes
+  each window's start and vertical scroll on `pre-command-hook`, and a window whose two
+  are unchanged afterwards is left as it was. A window made shorter shows less than it
+  did, its last row perhaps included, and nobody scrolled it; judged by what it shows, a
+  split or a pop-up would have stopped it following. This also confines the pixel
+  measurement (`cooked--shows-bottom-p`, about 0.4 ms) to commands that scroll a
+  terminal. cooked-dock.el used to make it after every command in every buffer, for
+  every visible terminal window; it now reads the answer.
+- *The mark names the buffer.* A window parameter outlives the buffer the window shows.
+- *Overscroll is undone for any window.* `cooked--clamp-overscroll` ran from the
+  buffer's own `post-command-hook`, so only for the selected window. Elsewhere each wheel
+  notch past the bottom moved the window down and the next drain moved it back: 29 jumps
+  of up to 17 rows in two seconds of a momentum scroll, measured. The global hook clamps
+  a following window that is not selected.
+
+Coming into a window by a key (`other-window`), cooked-navigate.el asks the same mark: a
+window left scrolled up is taken up as reading, and one showing the bottom is not.
+
+**A window being read keeps its start when it is made shorter.** Emacs keeps a window's
+start through a resize until redisplay finds point below the new bottom edge, and then
+scrolls to it. Point in a window being read is wherever the last scroll left it, usually
+the last row, so the minibuffer growing for a completion list moved the text up by its
+height, and the window grew back around the new place. `cooked--keep-reading-place`
+moves point onto the last row still showing, from `window-size-change-functions` and
+again after a dock has been refitted, since the refit takes rows from the window above.
+
+## Only the pending input is editable
+
+One invariant, kept by one function: `cooked--protect` makes the whole live screen
+`read-only` except the pending input, and it is called from the two primitives that make
+and unmake that region (`cooked--restore-pending-input`, `cooked--clear-input-region`)
+as well as from every drain. Before, the screen was read-only up to the *start* of the
+input and open from there to the end of the buffer, on the reasoning that typing is
+snapped into the region anyway. Snapping covers the commands in `cooked-snap-commands`.
+Everything else -- a kill, a deletion, a transposition, another package's insertion --
+could change the child's rows below the line, or leave text outside the markers
+`cooked-send-input` reads. cooked-program-line.el closed that for its own lines with a
+`read-only` put up and taken down around each command, which is where the stale
+stickiness described above came from.
+
+The far edge needs one character treated specially. An insertion is refused when the
+character after it is read-only and `front-sticky`, and the end of the input is where
+typing lands, so the first character after the region gets `cooked--input-edge-props`:
+read-only, not front-sticky. Text that becomes input has `read-only` *and* its
+stickiness removed, not the one property.
+
+**A refused edit moves nothing.** With the child's text read-only, a kill tried on it is
+refused -- but `kill-line` finds the end of what it would kill by moving there, and is
+refused afterwards, so `C-k` in the output acted as a motion to the end of the line.
+`cooked--refused` runs around `command-error-function` and puts point back where the
+command found it (`cooked--command-point`) after a `text-read-only` or
+`buffer-read-only`. One place for every command, rather than a remap per command that
+would miss whatever a package binds.
 
 ## cooked-annotate.el: rows, and the text that was on them
 

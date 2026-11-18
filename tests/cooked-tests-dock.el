@@ -228,5 +228,166 @@ which after a scroll holds newer text -- until the window had to follow it."
                                       (line-end-position)))
                      start-text)))))
 
+;; Which windows follow: a window that is not the selected one.
+
+(defmacro cooked-tests--with-unselected-terminal (&rest body)
+  "Run BODY with the scrolling program in a window that is not selected.
+`term' is that window, and the selected one shows another buffer; no dock."
+  (declare (indent 0))
+  `(cooked-tests--with-session
+       (list "python3" "-I" "-c" cooked-tests--scrolling-program)
+     (delete-other-windows)
+     (switch-to-buffer (current-buffer))
+     (should (cooked-tests--settle
+              (lambda () (string-match-p "line 60\n>" (cooked-tests--text)))))
+     (should (cooked-tests--settle (lambda () (eq (cooked--policy) 'raw))))
+     (cooked--refresh-keymap)
+     (let* ((cooked-dock nil)
+            (session (current-buffer))
+            (term (selected-window))
+            (other (split-window-right)))
+       (set-window-buffer other (get-buffer-create "*cooked-tests-other*"))
+       (select-window other)
+       (unwind-protect
+           (progn
+             (with-current-buffer session
+               (cooked-tests--settle (lambda () nil) 0.2))
+             ,@body)
+         (select-window term)
+         (delete-other-windows)
+         (kill-buffer "*cooked-tests-other*")))))
+
+(defun cooked-tests--command (function)
+  "Run FUNCTION the way the command loop runs a command, in the selected window."
+  (with-current-buffer (window-buffer (selected-window))
+    (setq this-command 'ignore)
+    (run-hooks 'pre-command-hook)
+    (funcall function)
+    (with-current-buffer (window-buffer (selected-window))
+      (run-hooks 'post-command-hook))))
+
+(defun cooked-tests--row-text (window)
+  "The text of the row WINDOW starts on."
+  (with-current-buffer (window-buffer window)
+    (save-excursion
+      (goto-char (window-start window))
+      (buffer-substring-no-properties (pos-bol) (pos-eol)))))
+
+(ert-deftest cooked-a-window-scrolled-up-from-elsewhere-is-left-alone ()
+  "A terminal's window scrolled up while another window is selected -- the wheel
+scrolls the window under the mouse -- stays where it was put while output
+arrives.  Its point is still on the live screen, which used to make it count
+as following: the next drain pinned it back to the bottom, and under a program
+printing steadily it could not be scrolled up at all."
+  (cooked-tests--with-unselected-terminal
+    (should-not (cooked--window-held-p term))
+    (cooked-tests--command
+     (lambda ()
+       (set-window-start term (with-current-buffer session
+                                (save-excursion
+                                  (goto-char (window-start term))
+                                  (pos-bol -2))))))
+    (should (cooked--window-held-p term))
+    (let ((text (cooked-tests--row-text term)))
+      (with-current-buffer session
+        (cooked--send cooked--session "xyz")
+        (should (cooked-tests--settle
+                 (lambda () (string-match-p "line 63" (cooked-tests--text))))))
+      (should (equal (cooked-tests--row-text term) text)))
+    ;; Scrolled back down to the bottom, by the same means, it follows again.
+    (cooked-tests--command
+     (lambda ()
+       (set-window-start term (with-current-buffer session
+                                (cooked--bottom-start term)))))
+    (should-not (cooked--window-held-p term))
+    (with-current-buffer session
+      (cooked--send cooked--session "x")
+      (should (cooked-tests--settle
+               (lambda () (string-match-p "line 64" (cooked-tests--text)))))
+      (should (= (window-start term) (cooked--bottom-start term))))))
+
+(ert-deftest cooked-a-scroll-past-the-bottom-from-elsewhere-is-undone ()
+  "A window that follows and is not the selected one cannot be scrolled past
+the bottom either: the overshoot is undone after the command, not left for the
+next drain to pull back, a notch at a time, for as long as the wheel turns."
+  (cooked-tests--with-unselected-terminal
+    (let ((bottom (with-current-buffer session (cooked--bottom-start term))))
+      (should (= (window-start term) bottom))
+      (cooked-tests--command
+       (lambda ()
+         (set-window-start term (with-current-buffer session
+                                  (save-excursion (goto-char bottom)
+                                                  (pos-bol 4))))))
+      (should (= (window-start term) bottom))
+      (should-not (cooked--window-held-p term)))))
+
+(ert-deftest cooked-a-window-made-shorter-still-follows ()
+  "A window that shows less than it did because it was made shorter was not
+scrolled by anyone, and goes on following."
+  (cooked-tests--with-unselected-terminal
+    (cooked-tests--command
+     (lambda () (split-window term nil 'below)))
+    (should-not (cooked--window-held-p term))))
+
+(ert-deftest cooked-entering-a-window-left-scrolled-up-is-reading ()
+  "Selecting a window that was scrolled up while it was not selected is taking
+up reading where it was left: the keys are Emacs', and the next drain does not
+take the window to the bottom."
+  (cooked-tests--with-unselected-terminal
+    (cooked-tests--command
+     (lambda ()
+       (set-window-start term (with-current-buffer session
+                                (save-excursion
+                                  (goto-char (window-start term))
+                                  (pos-bol -2))))))
+    (let ((text (cooked-tests--row-text term)))
+      (cooked-tests--command (lambda () (select-window term)))
+      (with-current-buffer session
+        (should cooked-navigate--reading)
+        (cooked--send cooked--session "xyz")
+        (should (cooked-tests--settle
+                 (lambda () (string-match-p "line 63" (cooked-tests--text))))))
+      (should (equal (cooked-tests--row-text term) text)))))
+
+(ert-deftest cooked-a-held-window-is-held-for-the-buffer-it-showed ()
+  "What a window was scrolled away from is one buffer's bottom.  Showing another
+session, it follows that one."
+  (cooked-tests--with-unselected-terminal
+    (cooked--hold-window term t)
+    (should (cooked--window-held-p term))
+    (let ((elsewhere (generate-new-buffer "*cooked-tests-elsewhere*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer term elsewhere)
+            (should-not (cooked--window-held-p term)))
+        (set-window-buffer term session)
+        (kill-buffer elsewhere)))))
+
+(ert-deftest cooked-a-window-being-read-keeps-its-place-when-made-shorter ()
+  "A window scrolled up and then made shorter -- the minibuffer growing, a
+pop-up -- goes on starting where it did: point, which the scroll left on its
+last row, is moved onto the last row that still shows, so that redisplay has no
+reason to scroll after it."
+  (cooked-tests--with-navigable
+    (delete-other-windows)
+    (let ((cooked-dock nil)
+          (window (selected-window)))
+      (cooked-tests--keys "M-v")
+      (should (cooked--window-held-p window))
+      (goto-char (cooked-dock--row
+                  window (1- (car (cooked-dock--visible-rows window)))))
+      (let ((start (window-start window))
+            (below (split-window window (/ (window-total-height window) 2)
+                                 'below)))
+        (unwind-protect
+            (progn
+              (cooked--keep-reading-place window)
+              (should (= (window-start window) start))
+              (should (<= (point)
+                          (cooked-dock--row
+                           window
+                           (1- (car (cooked-dock--visible-rows window)))))))
+          (delete-window below))))))
+
 (provide 'cooked-tests-dock)
 ;;; cooked-tests-dock.el ends here

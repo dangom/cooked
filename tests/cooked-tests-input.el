@@ -792,6 +792,41 @@ that is displayed nowhere."
      (cooked-tests--type ,input)
      ,@body))
 
+(ert-deftest cooked-a-word-killed-back-from-the-start-of-the-line-is-nothing ()
+  "At any prompt Emacs owns, not only a program's: a word killed backwards from
+the start of the line is no word, not a piece of the prompt and not an error --
+which is what killing words back faster than there are words comes to."
+  (cooked-tests--with-prompt-input "o n e SPC t w o"
+    (let ((text (cooked-tests--text)))
+      (cooked-tests--type "M-DEL M-DEL")
+      (should (equal (cooked--pending-input) ""))
+      ;; Twice more than there are words.
+      (cooked-tests--type "M-DEL M-DEL")
+      (should (equal (cooked--pending-input) ""))
+      (should (= (point) (cooked--input-start-position)))
+      ;; The prompt is as it was.
+      (should (equal (buffer-substring-no-properties
+                      (pos-bol) (cooked--input-start-position))
+                     "$ "))
+      (ignore text)
+      ;; And nothing of the fence is left between commands.
+      (should-not (text-property-not-all (point-min) (point-max) 'field nil)))))
+
+(ert-deftest cooked-a-prompt-is-the-only-editable-text ()
+  "Everything on the screen but the line being typed is read-only, the rows after
+it included, and the line stops being editable when it is sent."
+  (cooked-tests--with-prompt-input "a b c"
+    (pcase-let ((`(,start . ,end) (cooked--input-region)))
+      (should-not (text-property-not-all start end 'read-only nil))
+      (should-not (text-property-not-all (cooked--screen-start-position) start
+                                         'read-only t))
+      (should-not (text-property-not-all end (point-max) 'read-only t)))
+    (cooked-tests--type "RET")
+    (should-not (text-property-not-all (cooked--screen-start-position)
+                                       (or (cooked--input-start-position)
+                                           (point-max))
+                                       'read-only t))))
+
 (ert-deftest cooked-beginning-of-line-stops-at-the-command ()
   "Column 0 of the prompt row is inside the prompt, which is read-only: a
 motion that lands there has found the start of a line and not the start of

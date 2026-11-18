@@ -48,6 +48,32 @@
 ;; the program stops being one that navigation applies to -- it takes the
 ;; alternate screen, asks for the mouse or exits.  In the last case what was
 ;; typed goes to the kill ring rather than nowhere.
+;;
+;; A program can also stop reading its line without any of that: an agent puts
+;; a question up where its prompt was, while a line for it is half typed.  The
+;; place a line was taken at -- the cursor's column, and what the program had
+;; drawn before it on that row -- is remembered as where the program's empty
+;; line is.  When the cursor is found somewhere else and stays there, the line
+;; is set aside: taken off the screen and kept, and every key is the program's
+;; again, so the question can be answered.  When the cursor is back at that
+;; place, the line is too.
+;;
+;; The state is one of these at a time, and each function below says which it
+;; moves between:
+;;
+;;   idle     The program has every key.  Its line is believed empty.
+;;   probing  Characters were typed into that empty line, and the echo is
+;;            awaited (`cooked-program-line--probe').
+;;   held     The program has every key, and a line of its own that Emacs did
+;;            not see typed: a delegated character, a history recall, a paste
+;;            (`cooked-program-line--held').  No character is asked about, since
+;;            one echoed into the middle of that line is not a line to take.
+;;   owned    Emacs has the line (`cooked--program-line'); the program's is
+;;            empty.
+;;   aside    Emacs has a line and the program is not at its prompt
+;;            (`cooked-program-line--aside').  Keys as in idle.
+;;   handing  The line was handed back and its Enter is pending
+;;            (`cooked-program-line--submit').
 
 ;;; Code:
 
@@ -61,6 +87,7 @@
 (declare-function cooked--history-record "cooked-mode" (text))
 (declare-function cooked-dock-select-input "cooked-dock" ())
 (declare-function cooked--bracketed-paste-p "ext:cooked-core")
+(declare-function cooked--send "ext:cooked-core")
 (defvar cooked-drain-functions)
 
 (defcustom cooked-program-line-editor 'program
@@ -127,6 +154,17 @@ whatever it does in the program, and Emacs leaves it at that."
   :type 'number
   :group 'cooked)
 
+(defcustom cooked-program-line-away-delay 0.2
+  "Seconds a program's cursor may be off its line before the line is set aside.
+
+A program redrawing its screen moves its cursor all over it, and a redraw
+caught half-way must not be taken for a question: the line is only hidden for
+that long, and still Emacs' to type into.  Past it the program is taken to be
+showing something else where its line was -- a question, a menu -- and gets
+the keyboard until its cursor is back."
+  :type 'number
+  :group 'cooked)
+
 (defcustom cooked-program-line-accept-timeout 2
   "Seconds to wait for a program to take a line handed to it, before Enter.
 
@@ -149,9 +187,12 @@ sent; the line goes to the kill ring instead."
   "The `cooked-program-line-probe' awaiting the program's echo, or nil.")
 
 (defvar-local cooked-program-line--held nil
-  "Non-nil while the program keeps its line until a key that ends one.
-Set by a character from `cooked-program-line-delegate-characters', and by
-handing the line back with `cooked-delegate-key'.")
+  "Non-nil while the program has a line of its own that Emacs did not see typed.
+Set by a character from `cooked-program-line-delegate-characters', by handing
+the line back with `cooked-delegate-key', and by any key sent to the program
+that can put text in its line -- a history recall, a completion, a paste.
+Cleared by a key that ends a line, and when the program is seen back at its
+empty line; see `cooked-program-line--settle'.")
 
 (defvar-local cooked-program-line--submit nil
   "A line handed to the program and not yet done with, or nil.
@@ -164,13 +205,80 @@ first -- held by `cooked-program-line-hold-key' and sent by
 `cooked-program-line--flush'.")
 
 (defvar-local cooked-program-line--timer nil
-  "The timer that ends the wait in `cooked-program-line--submit', or nil.
-Drains check the deadline as well, but a program that draws nothing would
-otherwise keep the keys held for it forever.")
+  "The timer that looks again when no drain may come to do it, or nil.
+Drains check the deadlines as well, but a program that draws nothing would
+otherwise keep a line, or the keys held for one, waiting forever.")
 
 (defvar-local cooked-program-line--text nil
   "The line Emacs owns, as of the last command.
 Kept so that a line the program walked away from can still be given back.")
+
+(defvar-local cooked-program-line--anchor nil
+  "Where the program's empty line is, as (COL . BEFORE), or nil if never seen.
+
+COL is the cursor's column there and BEFORE what the program draws ahead of it
+on that row -- its prompt.  Learned each time a line is taken, which is the one
+moment the program has shown where it reads: nothing looks for a prompt, and
+nothing knows what one looks like.  See `cooked-program-line--at-line-p'.")
+
+(defvar-local cooked-program-line--aside nil
+  "A line Emacs owns that is off the screen while the program is elsewhere.
+The text, or nil.  See `cooked-program-line--set-aside'.")
+
+(defvar-local cooked-program-line--away-since nil
+  "When the program's cursor was first found off the line Emacs owns, or nil.
+A `float-time'; see `cooked-program-line-away-delay'.")
+
+(defvar-local cooked-program-line--sent-at 0
+  "When a key last went to the program, as a `float-time'.")
+
+(defvar-local cooked-program-line--sent-seen 0
+  "`cooked--sent-count' as of the last command.")
+
+(defconst cooked-program-line--settle-time 0.25
+  "Seconds after a key before the screen is taken to show what the key did.
+The cursor sitting at the program's empty line says the line is empty only once
+the program has had the chance to act on what it was last sent.")
+
+;;;; Where the program's line is
+
+(defun cooked-program-line--place ()
+  "Where the program's cursor is: its column, and what is before it on its row.
+As (COL . BEFORE), to compare with `cooked-program-line--anchor'."
+  (let ((inhibit-field-text-motion t)
+        (col (cooked-cursor-col cooked--cursor)))
+    (save-excursion
+      (cooked--goto-screen-row (cooked-cursor-row cooked--cursor))
+      (cons col (buffer-substring-no-properties
+                 (point) (car (cooked--forward-cells col)))))))
+
+(defun cooked-program-line--at-line-p ()
+  "Whether the program's cursor is where its empty line was last seen to be.
+Nil when no line was ever taken, and there is nowhere to compare with."
+  (and cooked-program-line--anchor
+       (equal (cooked-program-line--place) cooked-program-line--anchor)))
+
+(defun cooked-program-line--asking-p ()
+  "Whether the program is known to be somewhere other than at its empty line.
+
+Showing a menu or a question, or holding a line of its own.  Known, not
+guessed: nil until a line has been taken and its place learned, and nil while
+Emacs owns the line.  On `cooked-navigate-yield-function', so the keys in
+`cooked-navigation-yield-keys' go to a menu that wants them."
+  (and (eq cooked-program-line-editor 'emacs)
+       cooked-program-line--anchor
+       (not cooked--program-line)
+       (not (cooked-program-line--at-line-p))))
+
+(defun cooked-program-line--settle ()
+  "Stop holding the program's line once the program is seen back at an empty one.
+Only once it has had time to act on the last key: until then the cursor is
+where it was before the key, which says nothing."
+  (when (and cooked-program-line--held
+             (>= (- (float-time) cooked-program-line--sent-at)
+                 cooked-program-line--settle-time)
+             (cooked-program-line--at-line-p))
+    (setq cooked-program-line--held nil)))
 
 ;;;; Asking the program
 
@@ -204,14 +312,39 @@ Kept so that a line the program walked away from can still be given back.")
   (or (memq event '(return escape ?\r ?\n ?\e ?\C-c ?\C-u ?\C-d))
       (memq this-command '(cooked-interrupt cooked-send-eof))))
 
+(defun cooked-program-line--inert-p (event)
+  "Whether EVENT, sent to a program at an empty line, leaves the line empty.
+Rubbing out and moving along a line that has nothing in it."
+  (memq (event-basic-type event) '(backspace ?\d left right home end deletechar)))
+
+(defconst cooked-program-line--typing-commands
+  '(cooked-send-key cooked--peek-resume-and-send)
+  "Commands that send the program the one key that invoked them, as typed.")
+
 (defun cooked-program-line--observe (event)
-  "Account for EVENT, which a command just sent to the program."
+  "Account for EVENT, which the command just run sent to the program.
+
+Every command that sends the program anything comes through here, whichever it
+was: what matters is what the program's line can hold afterwards."
+  (cooked-program-line--settle)
+  (setq cooked-program-line--sent-at (float-time))
   (cond
-   ((not (cooked-program-line--printable-p event))
-    ;; Whatever follows another key is not a line being typed from empty.
-    (setq cooked-program-line--probe nil)
-    (when (cooked-program-line--ends-line-p event)
-      (setq cooked-program-line--held nil)))
+   ;; A line handed over is being waited on; what is sent meanwhile is that
+   ;; wait's own, or a key the user sent past it on purpose.
+   (cooked-program-line--submit nil)
+   ((cooked-program-line--ends-line-p event)
+    (setq cooked-program-line--probe nil
+          cooked-program-line--held nil))
+   ((not (and (cooked-program-line--printable-p event)
+              (memq this-command cooked-program-line--typing-commands)))
+    ;; Not a character typed: a key of the program's own, a paste, a recall.
+    ;; Unless it plainly does nothing to an empty line, the line is the
+    ;; program's from here -- and so is one with characters in it that were
+    ;; never seen echoed.
+    (unless (and (cooked-program-line--inert-p event)
+                 (null cooked-program-line--probe))
+      (setq cooked-program-line--held t))
+    (setq cooked-program-line--probe nil))
    (cooked-program-line--held nil)
    (cooked-program-line--probe
     (let ((probe cooked-program-line--probe))
@@ -243,9 +376,25 @@ characters right behind it."
          (start (- pos (length sent))))
     (and (= (cooked-cursor-col cooked--cursor)
             (+ (cooked-program-line-probe-col probe) (string-width sent)))
-         (>= start (save-excursion (goto-char pos) (line-beginning-position)))
+         (>= start (save-excursion (goto-char pos) (pos-bol)))
          (string= (buffer-substring-no-properties start pos) sent)
          (cons start pos))))
+
+(defun cooked-program-line--adopt (start end)
+  "Make the text between START and END the line Emacs owns.
+The one way into the owned state: the region, its protection, its edges and
+the keymap are all put right here, whoever found the text."
+  (setq cooked-program-line--probe nil
+        cooked-program-line--held nil
+        cooked-program-line--away-since nil
+        cooked--program-line t
+        cooked-program-line--text (buffer-substring-no-properties start end))
+  (cooked--set-input-mark start)
+  (set-marker comint-last-input-start start)
+  (setq cooked--input-end (copy-marker end t))
+  (cooked--protect-input)
+  (cooked-program-line--bound)
+  (cooked--refresh-keymap))
 
 (defun cooked-program-line--take (start end text)
   "Take the program's line: TEXT, which it echoed between START and END.
@@ -253,25 +402,99 @@ characters right behind it."
 The program is sent a Backspace for each character, so that it holds an empty
 line again, and the echo already on screen becomes the input region -- nothing
 moves.  The next drain lifts the region out and puts it back at the cursor the
-Backspaces left, which is the same place."
+Backspaces left, which is the same place.
+
+Where the line began is where the program's empty line is, and is remembered
+as that."
   (let ((follow (= (point) end)))
-    (setq cooked-program-line--probe nil
-          cooked--program-line t
-          cooked-program-line--text text)
-    (cooked--send-to-child (make-string (length text) ?\d))
-    (cooked--set-input-mark start)
-    (set-marker comint-last-input-start start)
-    (setq cooked--input-end (copy-marker end t))
-    (let ((inhibit-read-only t))
-      (cooked--protect start))
-    (cooked-program-line--bound)
-    (cooked--refresh-keymap)
+    (setq cooked-program-line--anchor
+          (cons (cooked-program-line-probe-col cooked-program-line--probe)
+                (let ((inhibit-field-text-motion t))
+                  (buffer-substring-no-properties
+                   (save-excursion
+                     (cooked--goto-screen-row (cooked-cursor-row cooked--cursor))
+                     (point))
+                   start))))
+    ;; A line set aside for a question, and the program reading another line
+    ;; meanwhile: the one typed now is the one being typed.
+    (cooked-program-line--rescue cooked-program-line--aside)
+    (setq cooked-program-line--aside nil)
+    ;; `cooked--send', not `cooked--send-to-child': these are not the user's
+    ;; keys, and must not be counted as one.
+    (cooked--send (cooked--require-session) (make-string (length text) ?\d))
+    (cooked-program-line--adopt start end)
     (when follow (goto-char end))))
+
+(defun cooked-program-line--rescue (text)
+  "Put TEXT, a line that has nowhere left to go, on the kill ring.
+Nothing when TEXT is nil or empty."
+  (when (and text (not (string-empty-p text)))
+    (kill-new text)
+    (message "cooked: the program left its line; what you typed is on the kill ring")))
+
+;;;; A line set aside
+
+(defun cooked-program-line--watch ()
+  "See whether the program is still at the line Emacs owns, after a drain.
+
+At it: the line is shown, bounded as `cooked-program-line--bound' bounds it.
+Off it: the line is hidden at once -- the drain has just put it back at the
+cursor, wherever that now is, and it is not text for that place -- and set
+aside if the cursor stays away for `cooked-program-line-away-delay'.  With no
+place known, as after `cooked-delegate-key' was undone by hand, there is
+nothing to compare and the line stays."
+  (cond
+   ((or (null cooked-program-line--anchor) (cooked-program-line--at-line-p))
+    (setq cooked-program-line--away-since nil)
+    (cooked-program-line--bound))
+   ((null cooked-program-line--away-since)
+    (setq cooked-program-line--away-since (float-time))
+    (cooked-program-line--veil)
+    (cooked-program-line--look-again cooked-program-line-away-delay))
+   ((>= (- (float-time) cooked-program-line--away-since)
+        cooked-program-line-away-delay)
+    (cooked-program-line--set-aside))
+   (t (cooked-program-line--veil))))
+
+(defun cooked-program-line--set-aside ()
+  "Take the line Emacs owns off the screen and keep it; the program has the keys.
+See `cooked-program-line--restore' for the way back."
+  (let ((text (cooked--pending-input))
+        (inhibit-field-text-motion t))
+    (cooked-program-line--unbound)
+    (cooked--with-child-edit (cooked--take-pending-input))
+    (setq cooked--program-line nil
+          cooked-program-line--text nil
+          cooked-program-line--away-since nil
+          cooked-program-line--aside (and text (not (string-empty-p text)) text))
+    (cooked--clear-input-region)
+    (cooked--check-undo-anchor)
+    (cooked--refresh-keymap)
+    (when cooked-program-line--aside
+      (message "cooked: your line is set aside while the program asks; it comes back with the prompt"))))
+
+(defun cooked-program-line--restore ()
+  "Put the line set aside back, the program being at its empty line again."
+  (let ((text cooked-program-line--aside)
+        (follow (= (point) (cooked--cursor-position)))
+        (inhibit-field-text-motion t))
+    (setq cooked-program-line--aside nil
+          ;; Before the text goes in: `cooked--restore-pending-input' asks who
+          ;; owns the line.
+          cooked--program-line t)
+    (cooked--with-child-edit (cooked--restore-pending-input text))
+    (pcase-let ((`(,start . ,end) (cooked--input-region)))
+      (cooked-program-line--adopt start end)
+      (when follow (goto-char end)))
+    (cooked--check-undo-anchor)))
 
 ;;;; The line's edges
 
 (defvar-local cooked-program-line--tail nil
   "Overlay hiding what the program draws after its cursor, or nil.")
+
+(defvar-local cooked-program-line--veiled nil
+  "Overlay hiding the line Emacs owns while the program's cursor is off it.")
 
 (defun cooked-program-line--bound ()
   "Hide what the program draws after the line Emacs owns.
@@ -280,6 +503,9 @@ The rest of the line's last row is what the program draws after its cursor for
 an empty line: a cursor of its own, a placeholder, a suggestion.  None of it is
 what is being typed, and its cursor after the user's text is a second cursor,
 so it is hidden.  Re-applied after every drain, which rewrites the row."
+  (when (overlayp cooked-program-line--veiled)
+    (delete-overlay cooked-program-line--veiled)
+    (setq cooked-program-line--veiled nil))
   (when-let* ((end (cdr (cooked--input-region))))
     (let ((eol (save-excursion (goto-char end) (pos-eol))))
       (if (overlayp cooked-program-line--tail)
@@ -288,69 +514,28 @@ so it is hidden.  Re-applied after every drain, which rewrites the row."
         (setq cooked-program-line--tail (make-overlay end eol nil t nil))
         (overlay-put cooked-program-line--tail 'invisible t)))))
 
-(defun cooked-program-line--unbound ()
-  "Take away what `cooked-program-line--bound' put on the screen."
-  (cooked-program-line--unfence)
+(defun cooked-program-line--veil ()
+  "Hide the line Emacs owns, and show the row it is on as the program drew it.
+For a drain that found the program's cursor off its line: the line has been put
+back at the cursor, as every drain puts it, and there it would sit in the
+middle of whatever the program is drawing."
   (when (overlayp cooked-program-line--tail)
     (delete-overlay cooked-program-line--tail)
-    (setq cooked-program-line--tail nil)))
+    (setq cooked-program-line--tail nil))
+  (when-let* ((region (cooked--input-region)))
+    (if (overlayp cooked-program-line--veiled)
+        (move-overlay cooked-program-line--veiled (car region) (cdr region))
+      (setq cooked-program-line--veiled
+            (make-overlay (car region) (cdr region) nil nil t))
+      (overlay-put cooked-program-line--veiled 'invisible t))))
 
-(defvar-local cooked-program-line--fenced nil
-  "Where `cooked-program-line--fence' began protecting, as a marker, or nil.")
-
-(defun cooked-program-line--fence ()
-  "Fence the line Emacs owns for the command about to run.
-
-The program's prompt before the line, on its first row, becomes a field of its
-own, as comint's prompts are: every command that finds the beginning of a line
--- `move-beginning-of-line', and any package's own -- stops at the line rather
-than going on into the prompt.  Everything after the line, the hidden tail and
-the program's rows below, becomes a field too, and read-only, so the end of a
-line is the end of what was typed and no kill or deletion reaches the
-program's rows.
-
-For the length of a command only, put up on `pre-command-hook' and taken down
-again on `post-command-hook': fields change what `line-beginning-position' and
-`line-end-position' answer, and the renderer, which asks them about rows, must
-never see one."
-  (cooked--protect-hook
-    (when-let* ((cooked--program-line)
-                (region (cooked--input-region)))
-      (pcase-let ((`(,start . ,end) region))
-        (with-silent-modifications
-          (let ((bol (save-excursion (goto-char start) (pos-bol))))
-            (when (< bol start)
-              ;; Rear-nonsticky, as comint's prompt is: the line's first
-              ;; position belongs to the line, not to the prompt before it, or
-              ;; nothing could move forward from there.
-              (add-text-properties bol start
-                                   '(field cooked-prompt
-                                     rear-nonsticky (read-only field)))))
-          (when (< end (point-max))
-            ;; Not front-sticky, so typing at the end of the line still works.
-            (add-text-properties end (point-max) '(field cooked-after read-only t))))
-        (setq cooked-program-line--fenced (copy-marker end))))))
-
-(defun cooked-program-line--unfence ()
-  "Take down what `cooked-program-line--fence' put up, if anything."
-  (cooked--protect-hook
-    (when-let* ((fence cooked-program-line--fenced))
-      (setq cooked-program-line--fenced nil)
-      (with-silent-modifications
-        (let ((screen (or (cooked--screen-start-position) (point-min))))
-          ;; The prompt's stickiness back to `cooked--read-only-props''.
-          (let ((pos screen))
-            (while (setq pos (text-property-any pos (point-max) 'field 'cooked-prompt))
-              (let ((next (or (next-single-property-change pos 'field) (point-max))))
-                (put-text-property pos next 'rear-nonsticky '(read-only))
-                (setq pos next))))
-          (remove-text-properties screen (point-max) '(field nil)))
-        ;; cooked--protect leaves everything after the line's start editable;
-        ;; this puts it back as it was.
-        (when (marker-position fence)
-          (remove-text-properties (min fence (point-max)) (point-max)
-                                  '(read-only nil))))
-      (set-marker fence nil))))
+(defun cooked-program-line--unbound ()
+  "Take away what this file put on the screen around the line."
+  (cooked--unfence)
+  (dolist (overlay (list cooked-program-line--tail cooked-program-line--veiled))
+    (when (overlayp overlay) (delete-overlay overlay)))
+  (setq cooked-program-line--tail nil
+        cooked-program-line--veiled nil))
 
 ;;;; Handing the line back
 
@@ -370,7 +555,8 @@ paste; see `cooked-program-line-accept-timeout'."
     (cooked--clear-input-region)
     (cooked--history-record text)
     (setq cooked--program-line nil
-          cooked-program-line--text nil)
+          cooked-program-line--text nil
+          cooked-program-line--away-since nil)
     (cooked-program-line--wait 'paste cooked-program-line-accept-timeout text)
     (cooked--refresh-keymap)
     (cooked--send-to-child (if (cooked--bracketed-paste-p cooked--session)
@@ -388,17 +574,23 @@ keys held so far."
                 :cell (cooked--cursor-cell)
                 :deadline (+ (float-time) seconds)
                 :queue (plist-get submit :queue))))
+  (cooked-program-line--look-again seconds))
+
+(defun cooked-program-line--look-again (seconds)
+  "Look at where things stand in SECONDS, whether or not the program draws.
+One timer at a time: only one thing is ever being waited for."
   (cooked-program-line--cancel-timer)
   (let ((buffer (current-buffer)))
     (setq cooked-program-line--timer
           ;; A little after the deadline, so the check it runs finds it passed.
-          (run-with-timer (+ seconds 0.01) nil
-                          (lambda ()
-                            (when (buffer-live-p buffer)
-                              (with-current-buffer buffer
-                                (cooked--protect-hook
-                                  (when cooked-program-line--submit
-                                    (cooked-program-line--check-submit))))))))))
+          (run-with-timer
+           (+ seconds 0.01) nil
+           (lambda ()
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq cooked-program-line--timer nil)
+                 (cooked--protect-hook
+                   (cooked-program-line--after-drain)))))))))
 
 (defun cooked-program-line--cancel-timer ()
   "Cancel `cooked-program-line--timer', if it is running."
@@ -438,9 +630,12 @@ the first character of a new line asks the program whether it echoes."
     (cooked-program-line--cancel-timer)
     (dolist (event queue)
       (when (cooked--live-session)
-        (let ((last-command-event event))
-          (cooked-send-key))
-        (cooked-program-line--observe event)))))
+        (let ((last-command-event event)
+              (this-command 'cooked-send-key))
+          (cooked-send-key)
+          (cooked-program-line--observe event))))
+    ;; Accounted for here, each as it went: not the next command's to find.
+    (setq cooked-program-line--sent-seen cooked--sent-count)))
 
 (defun cooked-program-line-hold-key ()
   "Hold the key that invoked this command until the program has taken the line.
@@ -460,18 +655,18 @@ Called by `cooked-delegate-key', which sends the text."
   (cooked-program-line--unbound)
   (setq cooked--program-line nil
         cooked-program-line--text nil
+        cooked-program-line--away-since nil
         cooked-program-line--held t))
 
 (defun cooked-program-line--release (&optional rescue)
   "Stop owning the program's line.
 With RESCUE, what was typed in it goes to the kill ring, and the user is told."
-  (when (and rescue cooked-program-line--text
-             (not (string-empty-p cooked-program-line--text)))
-    (kill-new cooked-program-line--text)
-    (message "cooked: the program left its line; what you typed is on the kill ring"))
+  (when rescue
+    (cooked-program-line--rescue cooked-program-line--text))
   (cooked-program-line--unbound)
   (setq cooked--program-line nil
-        cooked-program-line--text nil)
+        cooked-program-line--text nil
+        cooked-program-line--away-since nil)
   (cooked--clear-input-region)
   (cooked--refresh-keymap))
 
@@ -531,30 +726,40 @@ Built from `cooked-program-line-pass-keys'.")
 (defun cooked-program-line--post-command ()
   "Watch what the last command sent the program, or did to the line Emacs owns."
   (cooked--protect-hook
-    (cond
-     (cooked--program-line
-      (let ((text (cooked--pending-input)))
-        (if (or (null text) (string-empty-p text))
-            ;; Nothing left to own, so the next key is the program's again --
-            ;; an answer to a menu, say.
-            (cooked-program-line--release)
-          (setq cooked-program-line--text text))))
-     ((memq this-command '(cooked-send-key cooked--peek-resume-and-send))
-      (cooked-program-line--observe last-command-event)))))
+    (let ((sent (/= cooked--sent-count cooked-program-line--sent-seen)))
+      (setq cooked-program-line--sent-seen cooked--sent-count)
+      (cond
+       (cooked--program-line
+        (let ((text (cooked--pending-input)))
+          (if (or (null text) (string-empty-p text))
+              ;; Nothing left to own, so the next key is the program's again --
+              ;; an answer to a menu, say.
+              (cooked-program-line--release)
+            (setq cooked-program-line--text text))))
+       ;; Or signalled rather than sent a character: a tty with no interrupt
+       ;; character still has the line ended for it.
+       ((or sent (memq this-command '(cooked-interrupt cooked-send-eof)))
+        (cooked-program-line--observe last-command-event))))))
+
+(defun cooked-program-line--waiting-p ()
+  "Whether anything here depends on what the program draws next."
+  (or cooked--program-line cooked-program-line--probe cooked-program-line--held
+      cooked-program-line--submit cooked-program-line--aside))
 
 (defun cooked-program-line--after-drain ()
-  "Act on what the program just drew: an echo, or a line taken.
+  "Act on what the program just drew: an echo, a line taken, a line left.
 On `cooked-drain-functions', and nothing at all unless something is waiting --
 which, with `cooked-program-line-editor' at its default, is always."
   (cond
-   ((not (or cooked--program-line cooked-program-line--probe
-             cooked-program-line--held cooked-program-line--submit)))
+   ((not (cooked-program-line--waiting-p)))
    ((not (cooked-navigate--eligible-p))
     ;; Not a program on the main screen reading keys any more: nothing it drew
     ;; was an answer, and a line it held is not one anything reads.  Keys typed
     ;; while a line waited go wherever the keyboard now goes.
     (setq cooked-program-line--probe nil
           cooked-program-line--held nil)
+    (cooked-program-line--rescue cooked-program-line--aside)
+    (setq cooked-program-line--aside nil)
     (when cooked-program-line--submit
       (cooked-program-line--flush))
     (when cooked--program-line
@@ -562,24 +767,35 @@ which, with `cooked-program-line-editor' at its default, is always."
    (t
     (when cooked-program-line--submit
       (cooked-program-line--check-submit))
-    (when-let* ((probe cooked-program-line--probe))
-      (if-let* ((at (cooked-program-line--echoed-p probe)))
-          (cooked-program-line--take (car at) (cdr at)
-                                     (cooked-program-line-probe-sent probe))
-        (when (> (float-time) (cooked-program-line-probe-deadline probe))
-          (setq cooked-program-line--probe nil))))
-    (when cooked--program-line
-      (if (cooked--input-region)
-          (cooked-program-line--bound)
-        (cooked-program-line--release 'rescue))))))
+    (let ((taken nil))
+      (when-let* ((probe cooked-program-line--probe))
+        (if-let* ((at (cooked-program-line--echoed-p probe)))
+            (progn
+              (cooked-program-line--take (car at) (cdr at)
+                                         (cooked-program-line-probe-sent probe))
+              (setq taken t))
+          (when (> (float-time) (cooked-program-line-probe-deadline probe))
+            (setq cooked-program-line--probe nil))))
+      (cooked-program-line--settle)
+      (cond
+       ;; Just taken: the program's cursor is still after its echo, and is not
+       ;; to be looked for at its empty line until the Backspaces have landed.
+       (taken nil)
+       (cooked--program-line
+        (if (cooked--input-region)
+            (cooked-program-line--watch)
+          (cooked-program-line--release 'rescue)))
+       ((and cooked-program-line--aside
+             (not cooked-program-line--submit)
+             (not cooked-program-line--probe)
+             (cooked-program-line--at-line-p))
+        (cooked-program-line--restore)))))))
 
 (defun cooked-program-line--setup ()
   "Install the buffer-local hooks."
+  (setq-local cooked-navigate-yield-function #'cooked-program-line--asking-p)
   (add-hook 'cooked-drain-functions #'cooked-program-line--after-drain nil t)
   (add-hook 'pre-command-hook #'cooked-program-line--pre-command -60 t)
-  ;; Last before the command and first after it, so no other hook sees a fence.
-  (add-hook 'pre-command-hook #'cooked-program-line--fence 95 t)
-  (add-hook 'post-command-hook #'cooked-program-line--unfence -95 t)
   (add-hook 'post-command-hook #'cooked-program-line--post-command 40 t))
 
 (add-hook 'cooked-mode-hook #'cooked-program-line--setup)

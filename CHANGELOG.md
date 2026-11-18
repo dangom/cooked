@@ -103,6 +103,9 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Changed
 
+- The pixel measurement that decides docking is made only after a command that
+  scrolled a terminal's window, rather than after every command in every buffer
+  for every visible terminal.
 - A soft-wrapped line no longer has a continuation arrow in the fringe. A
   truncated row keeps its truncation arrow.
 - Output floods are several times faster. Scrollback that `cooked-scrollback-lines`
@@ -137,6 +140,44 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- "Text is read-only" when typing or killing words quickly in a program's line
+  that Emacs edits. The character after a line just taken still carried the
+  stickiness of the program's text, and refused whatever was typed before it
+  until the program redrew. Everything on the live screen but the pending input
+  is now read-only at all times, kept so by `cooked--protect` wherever the input
+  region is made or cleared, rather than for the length of a command.
+- A question an agent put up while a line was half typed could not be answered:
+  the line was drawn inside the question and every key stayed Emacs'. The line
+  now steps aside, off the screen and kept, until the program is back at its
+  prompt (`cooked-program-line-away-delay`).
+- `C-p` and `C-n` in a program's menu moved point instead of the menu, and left
+  the buffer reading its output so that the arrows and `RET` no longer reached
+  the program either. They go to a program that is asking
+  (`cooked-navigation-yield-keys`).
+- Switching to a terminal's window, or clicking into it from another, could put
+  it in the reading state on its own when the screen had changed since a command
+  was last run there, so `RET` and the arrows did not reach the program.
+- A kill or deletion refused in the program's output moved point: `C-k` went to
+  the end of the line before being told the text was read-only. Point stays.
+- A character typed after recalling or pasting into a program's own line was
+  taken as a new Emacs line of one character. A line the program filled in
+  stays the program's until it is sent or cleared.
+- A terminal's window scrolled up with the wheel while another window was
+  selected was pulled back to the bottom by the next output, unless it had been
+  docked: under a program printing steadily, a window too short to dock could
+  not be scrolled up at all. Whether a window follows is now recorded per window
+  when a command scrolls it, not inferred from where its point is.
+- Scrolling such a window down past the bottom jittered for as long as the wheel
+  turned, each notch undone by the next redraw. The overshoot is undone after the
+  command, as it already was for the selected window.
+- A window being read moved by the height of the minibuffer or a pop-up when it
+  was made shorter, and did not move back. It keeps the text it starts with.
+- Selecting a window that had been scrolled up while it was not selected took it
+  back to the bottom at the next output. It is taken up as reading.
+- Killing words back past the start of a shell prompt Emacs edits signalled
+  "Text is read-only". The line's edges stop every command at any prompt Emacs
+  owns, not only at a program's line.
+- `make compile` failed on two free-variable warnings.
 - With `cooked-program-line-editor` set to `emacs`, keys typed straight after `RET`,
   before the program had taken the line, were sent ahead of its Enter and
   submitted as the end of the message. They are held, and start the next line.

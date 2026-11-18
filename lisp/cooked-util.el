@@ -364,9 +364,18 @@ nil to a function that expects a user-pointer shows the user
 that the session is over."
   (or (cooked--live-session) (user-error "No live session")))
 
+(defvar-local cooked--sent-count 0
+  "How many times `cooked--send-to-child' has sent something in this buffer.
+
+A count rather than a hook, for a layer that has to know *that* a command gave
+the child something without caring through which of the dozen commands that
+can: it compares the count across the command.  Replies and notifications go
+by `cooked--send-if-live' and are not counted -- they are not the user's.")
+
 (defun cooked--send-to-child (bytes)
   "Send BYTES to the child, refusing if the session is over."
-  (cooked--send (cooked--require-session) bytes))
+  (cooked--send (cooked--require-session) bytes)
+  (setq cooked--sent-count (1+ cooked--sent-count)))
 
 (defun cooked--send-if-live (bytes)
   "Send BYTES if there is still a child, and do nothing if there is not.

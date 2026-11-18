@@ -439,5 +439,201 @@ where it is, and RET from the dock submits and follows again."
           (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "abc"))))
           (should-not (window-parameter main 'cooked-dock)))))))
 
+;; The one invariant: only the line is editable.
+
+(defun cooked-tests--editable-spans ()
+  "The stretches of the live screen that carry no `read-only', as conses."
+  (let ((pos (cooked--screen-start-position)) spans)
+    (while (< pos (point-max))
+      (let ((next (or (next-single-property-change pos 'read-only) (point-max))))
+        (unless (get-text-property pos 'read-only)
+          (push (cons pos next) spans))
+        (setq pos next)))
+    (nreverse spans)))
+
+(ert-deftest cooked-program-line-is-the-only-editable-text ()
+  "The line Emacs owns is the only text on the screen that can be changed, from
+the moment it is taken -- not only once the program has drawn again, and not
+only for the length of a command."
+  (cooked-tests--with-line-editor
+    (execute-kbd-macro (kbd "h e l l o"))
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (should (equal (cooked-tests--editable-spans) (list (cooked--input-region))))
+    (cooked-tests--settle (lambda () nil) 0.3)
+    (should (equal (cooked-tests--editable-spans) (list (cooked--input-region))))
+    (cooked-tests--line-keys "RET")
+    ;; Handed over: nothing on the screen is the user's to edit.
+    (should-not (cooked-tests--editable-spans))))
+
+(ert-deftest cooked-program-line-takes-a-key-typed-before-the-program-redraws ()
+  "A character typed right after the line is taken, before the program has
+drawn anything more, goes into the line.  The character after the line was the
+program's a moment ago, and what it carried then must not refuse the typing."
+  (cooked-tests--with-line-editor
+    (execute-kbd-macro (kbd "h e l l o"))
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    ;; The program's cursor is still after its echo, which is not it having
+    ;; left the line: nothing is hidden.
+    (should-not cooked-program-line--veiled)
+    (should-not cooked-program-line--away-since)
+    ;; No drain in between.
+    (execute-kbd-macro (kbd "x"))
+    (should (equal (cooked--pending-input) "hellox"))
+    (execute-kbd-macro (kbd "C-a y"))
+    (should (equal (cooked--pending-input) "yhellox"))))
+
+(ert-deftest cooked-program-line-survives-typing-and-killing-at-any-pace ()
+  "Typing and killing words back, with the program's redraws landing between
+the keys wherever they happen to, never signals: the line is taken, emptied and
+taken again without a key being refused."
+  (cooked-tests--with-line-editor
+    (let ((kill (lambda () (interactive) (backward-kill-word 1))))
+      (unwind-protect
+          (progn
+            (global-set-key [f7] kill)
+            (dotimes (round 12)
+              (dolist (key (split-string "a b c SPC d e f SPC g h i"))
+                (execute-kbd-macro (kbd key))
+                (when (zerop (% (random 100) 3))
+                  (accept-process-output nil (/ (random 20) 1000.0))))
+              (dotimes (_ (+ 2 (random 5)))
+                (execute-kbd-macro [f7])
+                (when (zerop (% (random 100) 2))
+                  (accept-process-output nil (/ (random 20) 1000.0))))
+              (cooked-tests--settle (lambda () nil) 0.05)))
+        (global-unset-key [f7])))))
+
+(ert-deftest cooked-program-line-kills-no-further-back-than-its-start ()
+  "A word killed backwards from the start of the line is nothing, not a piece
+of the program's prompt -- and not an error."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "o n e SPC t w o")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (cooked-tests--line-keys "C-a")
+    (let ((text (cooked-tests--text)))
+      (execute-kbd-macro (kbd "M-DEL"))
+      (should (equal (cooked--pending-input) "one two"))
+      (should (equal (cooked-tests--text) text)))))
+
+(ert-deftest cooked-a-refused-edit-leaves-point-where-it-was ()
+  "`C-k' in the program's output is refused, and point stays put: `kill-line'
+moves to the end of the line before it is told the text is read-only."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "M-v")
+    (should cooked-navigate--reading)
+    (goto-char (cooked--screen-start-position))
+    (let ((before (point))
+          (err (should-error (execute-kbd-macro (kbd "C-k")))))
+      ;; What the command loop does with the error, outside a keyboard macro.
+      (should (/= (point) before))
+      (cooked--refused err)
+      (should (= (point) before)))))
+
+;; A program that asks.
+
+(defun cooked-tests--ask ()
+  "Make the program ask its question, and wait for it."
+  (cooked--send cooked--session "\C-q")
+  (should (cooked-tests--settle
+           (lambda () (string-search "Pick one:" (cooked-tests--text))))))
+
+(ert-deftest cooked-program-line-steps-aside-for-a-question ()
+  "A program that puts a question where its prompt was, with a line half typed,
+gets the keyboard: the line is taken off the screen rather than planted in the
+question, the keys that answer go to the program, and the line is back with the
+prompt."
+  (cooked-tests--with-line-editor
+    (let ((cooked-program-line-away-delay 0.05))
+      (cooked-tests--line-keys "d r a f t")
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (cooked-tests--ask)
+      (should (cooked-tests--settle (lambda () cooked-program-line--aside)))
+      (should-not cooked--program-line)
+      (should (eq (cooked--policy) 'raw))
+      (should-not (string-search "draft" (cooked-tests--text)))
+      (should (string-search "* red" (cooked-tests--text)))
+      ;; Down the list, by the arrow and by the key Emacs moves by line with.
+      (cooked-tests--line-keys "<down>")
+      (should (cooked-tests--settle
+               (lambda () (string-search "* blue" (cooked-tests--text)))))
+      (cooked-tests--line-keys "C-n")
+      (should (cooked-tests--settle
+               (lambda () (string-search "* green" (cooked-tests--text)))))
+      (should-not cooked-navigate--reading)
+      (cooked-tests--line-keys "RET")
+      (should (cooked-tests--settle
+               (lambda () (string-search "picked green" (cooked-tests--text)))))
+      ;; The prompt is back, and the line with it.
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (should-not cooked-program-line--aside)
+      (should (equal (cooked--pending-input) "draft"))
+      (should (string-search "\n> draft" (cooked-tests--text)))
+      (cooked-tests--line-keys "RET")
+      (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "draft")))))))
+
+(ert-deftest cooked-program-line-is-not-set-aside-by-a-redraw ()
+  "A program whose cursor is off its line for a moment -- a redraw caught
+half-way -- keeps Emacs' line: it is hidden for that moment, and typed into as
+before."
+  (cooked-tests--with-line-editor
+    (let ((cooked-program-line-away-delay 5))
+      (cooked-tests--line-keys "d r a f t")
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (cooked-tests--ask)
+      (should cooked--program-line)
+      (should (invisible-p (car (cooked--input-region))))
+      (execute-kbd-macro (kbd "s"))
+      (should (equal (cooked--pending-input) "drafts"))
+      ;; Answered behind Emacs' back: the prompt returns, and the line shows.
+      (cooked--send cooked--session "\r")
+      (should (cooked-tests--settle
+               (lambda () (string-search "\n> drafts" (cooked-tests--text)))))
+      (should cooked--program-line)
+      (should-not (invisible-p (car (cooked--input-region)))))))
+
+(ert-deftest cooked-program-line-gives-a-question-its-keys ()
+  "With no line typed, a question still gets the keys Emacs moves by line with:
+once the program's line has been seen, its cursor elsewhere says it is asking."
+  (cooked-tests--with-line-editor
+    ;; A line taken and sent, so where the program reads is known.
+    (cooked-tests--line-keys "h i")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (cooked-tests--line-keys "RET")
+    (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "hi"))))
+    (should (cooked-tests--settle (lambda () (null cooked-program-line--submit))))
+    ;; At the empty prompt `C-p' is the way up into the output.
+    (should (eq (key-binding (kbd "C-p")) #'previous-line))
+    (cooked-tests--ask)
+    (should (eq (key-binding (kbd "C-p")) #'cooked-send-key))
+    (cooked-tests--line-keys "C-n C-n C-p")
+    (should (cooked-tests--settle
+             (lambda () (string-search "* blue" (cooked-tests--text)))))
+    (should-not cooked-navigate--reading)
+    (cooked-tests--line-keys "RET")
+    (should (cooked-tests--settle
+             (lambda () (string-search "picked blue" (cooked-tests--text)))))
+    (should (cooked-tests--settle
+             (lambda () (eq (key-binding (kbd "C-p")) #'previous-line))))
+    ;; And the next line typed is Emacs' again.
+    (cooked-tests--settle (lambda () nil) 0.4)
+    (cooked-tests--line-keys "y o")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (should (equal (cooked--pending-input) "yo"))))
+
+(ert-deftest cooked-program-line-leaves-a-recalled-line-with-the-program ()
+  "A key that puts text in the program's line -- its own history, here -- makes
+the line the program's: what is typed after it is not taken as a new line,
+which would be the end of one Emacs never saw the start of."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "<up>")
+    (should (cooked-tests--settle
+             (lambda () (string-search "> recalled" (cooked-tests--text)))))
+    (should cooked-program-line--held)
+    (cooked-tests--line-keys "! !")
+    (should-not cooked--program-line)
+    (cooked-tests--line-keys "RET")
+    (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "recalled!!"))))
+    (should-not cooked-program-line--held)))
+
 (provide 'cooked-tests-program-line)
 ;;; cooked-tests-program-line.el ends here

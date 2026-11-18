@@ -438,5 +438,33 @@ as the wheel turned.  The overshoot is now undone in the same command."
       (cooked--clamp-overscroll)
       (should (= (window-start w) (point-min))))))
 
+;; What a command is judged against.
+
+(ert-deftest cooked-navigate-judges-a-command-by-what-it-found ()
+  "Whether a command left the input is decided against the window as that
+command found it.  A command that began in another buffer and ended in this
+one -- `other-window' -- found nothing here, and is not compared with what the
+last command to run in this buffer left behind: against that, a screen that had
+grown shorter meanwhile read as a window scrolled up, and the keys were taken
+from the program."
+  (cooked-tests--with-navigable
+    (let ((window (selected-window)))
+      ;; What some earlier command found: the window further down than it is.
+      (setq cooked-navigate--before nil)
+      (cooked-navigate--pre-command)
+      (should (eq (car cooked-navigate--before) window))
+      (cooked-navigate--post-command)
+      ;; Used up by the command it was taken for.
+      (should-not cooked-navigate--before)
+      (should-not cooked-navigate--reading)
+      ;; The screen moves under the window, and a command arrives from
+      ;; elsewhere: nothing was found here before it, so nothing is concluded.
+      (set-window-start window (point-min))
+      (let ((this-command 'other-window)
+            (last-command-event ?o))
+        (cooked-navigate--post-command))
+      (should-not cooked-navigate--reading)
+      (should (eq (key-binding (kbd "RET")) #'cooked-send-key)))))
+
 (provide 'cooked-tests-navigate)
 ;;; cooked-tests-navigate.el ends here
