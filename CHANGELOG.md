@@ -166,6 +166,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   frame of its status -- was dropped even when the text had not changed. The
   mark is now carried across a redraw as point is, in the input and on the
   screen, and a selection is dropped only when its text was rewritten.
+- `C-SPC` at a running program's empty line was sent to the program, which did
+  nothing with it, and the line was then left the program's to edit. It sets
+  the mark, as `C-p` there moves up (`cooked-navigation-keys`), and with a
+  region active `C-p` and `C-n` extend it even where the program is taken to be
+  asking -- which a program whose prompt has nothing before the cursor is,
+  until a line has been typed to it.
 - A question a program opened with, before any line had been typed to it, did
   not get `C-p` and `C-n`: an agent asking whether to trust the folder it was
   started in. Where the program reads was not yet known, the keys moved point,

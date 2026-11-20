@@ -278,6 +278,34 @@ the selection is compared, not after."
                (lambda () (string-search "rewritten" (cooked-tests--text)))))
       (should-not mark-active))))
 
+;; `C-SPC' as a graphical frame reports it and as a terminal frame does.
+(ert-deftest cooked-program-line-sets-the-mark-at-an-empty-line ()
+  "`C-SPC' at a line with nothing typed sets the mark and is not sent to the
+program: there is no line there for Emacs to own, and every key was the
+program's.  The region then reaches up into the output and outlives a redraw,
+and the line is still Emacs' to take when something is typed."
+  (cooked-tests--with-line-editor
+    (let ((transient-mark-mode t))
+      (dolist (key '("C-SPC" "C-@"))
+        (should (eq (key-binding (kbd key)) #'set-mark-command))
+        (execute-kbd-macro (kbd (concat key " C-p C-a")))
+        (should mark-active)
+        (should-not cooked-program-line--held)
+        (let ((selected (buffer-substring-no-properties
+                         (region-beginning) (region-end))))
+          (should (string-prefix-p "line 60\n" selected))
+          (cooked--send cooked--session "\C-b")
+          (cooked-tests--settle (lambda () nil) 0.3)
+          (should mark-active)
+          (should (equal (buffer-substring-no-properties
+                          (region-beginning) (region-end))
+                         selected)))
+        (deactivate-mark)
+        (execute-kbd-macro (kbd "RET")))
+      (cooked-tests--line-keys "h i")
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (should (equal (cooked--pending-input) "hi")))))
+
 (ert-deftest cooked-program-line-keeps-kills-off-the-programs-rows ()
   "\\`C-k' and \\`C-d' at the end of the line leave the program's rows below it
 alone."
@@ -732,6 +760,13 @@ asking.  At the prompt that follows the keys are Emacs' again."
           (should cooked-navigate--applies)
           (should-not cooked-program-line--anchor)
           (should (eq (key-binding (kbd "C-n")) #'cooked-send-key))
+          ;; Not with a region being drawn, where they extend it: the guess
+          ;; is as often a program whose prompt has nothing before the cursor.
+          (let ((transient-mark-mode t))
+            (execute-kbd-macro (kbd "C-SPC"))
+            (should (eq (key-binding (kbd "C-p")) #'previous-line))
+            (deactivate-mark))
+          (should (eq (key-binding (kbd "C-p")) #'cooked-send-key))
           (cooked-tests--line-keys "C-n C-n C-p")
           (should (cooked-tests--settle
                    (lambda () (string-search "* blue" (cooked-tests--text)))))

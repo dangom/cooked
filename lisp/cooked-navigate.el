@@ -83,6 +83,8 @@ its script.  nil turns navigation off."
     ("M-p" . cooked-previous-input)
     ("M-n" . cooked-next-input)
     ("C-y" . cooked-paste)
+    ("C-SPC" . set-mark-command)
+    ("C-@" . set-mark-command)
     ("C-s" . isearch-forward)
     ("C-r" . isearch-backward)
     ("C-M-s" . isearch-forward-regexp)
@@ -97,8 +99,10 @@ comint: \\`C-p' and \\`C-n' move by line, so \\`C-p' steps up into the
 output; \\`M-p' and \\`M-n' are the input history, sent to the program as
 the Up and Down keys it would have received for them in a terminal.  \\`C-y'
 pastes Emacs' kill ring -- and so the clipboard -- as `yank' does everywhere
-else.  \\`C-s' and \\`C-r' are isearch over the output, which a search from the
-input necessarily is.  \\`M-v' and \\`M-<' are the other ways out.
+else.  \\`C-SPC' sets the mark, so a selection can be started from the input
+and drawn up into the output; \\`C-@' is the same key as a terminal frame
+reports it.  \\`C-s' and \\`C-r' are isearch over the output, which a search
+from the input necessarily is.  \\`M-v' and \\`M-<' are the other ways out.
 
 Every entry takes a key away from the program: a readline-based program loses
 \\`M-<' (beginning of history) and \\`C-r' (history search), and a program with
@@ -121,7 +125,8 @@ Each is a `kbd' string naming a key in that list.  A program showing a menu or
 a question in place of its input moves through it with the same keys Emacs
 moves by line with, and there the program must have them: \\`C-p' taken as a
 motion leaves a menu unanswered.  So while `cooked-navigate-yield-function'
-says the program is not at its line, these go to it like any other key.
+says the program is not at its line, these go to it like any other key --
+except with a region active, where they extend it.
 
 Nothing says so by default, and then this list does nothing; with
 `cooked-program-line-editor' at `emacs' the program's line is watched, and it
@@ -190,8 +195,15 @@ reading is far more likely to mean \"take me back\" than \"submit whatever is in
 the prompt\", and the second is one more RET away.")
 
 (defun cooked-navigate--yield-p ()
-  "Whether the keys in `cooked-navigation-yield-keys' are the program's now."
+  "Whether the keys in `cooked-navigation-yield-keys' are the program's now.
+
+Never while a region is being drawn: the mark was set on purpose and the key
+that follows it extends the selection, whatever the program is showing.  That
+matters most where the answer is a guess -- a program whose prompt is drawn
+with nothing before the cursor reads as one that is asking until a line has
+been typed to it, and its output could not be selected from the input at all."
   (and cooked-navigate-yield-function
+       (not (region-active-p))
        (condition-case nil
            (funcall cooked-navigate-yield-function)
          (error nil))))
