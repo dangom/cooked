@@ -666,6 +666,55 @@ once the program's line has been seen, its cursor elsewhere says it is asking."
     (should (cooked-tests--settle (lambda () cooked--program-line)))
     (should (equal (cooked--pending-input) "yo"))))
 
+(ert-deftest cooked-program-line-gives-a-first-question-its-keys ()
+  "A program that asks before it has read anything -- whether to trust the folder
+it was started in -- gets `C-p' and `C-n' too.  No line has been taken, so where
+it reads is not known; its cursor with no prompt before it is what says it is
+asking.  At the prompt that follows the keys are Emacs' again."
+  (let ((cooked-program-line-editor 'emacs)
+        (evil (bound-and-true-p evil-mode)))
+    (when evil (evil-mode -1))
+    (unwind-protect
+        (cooked-tests--with-session
+            (list "python3" "-I" cooked-tests--line-editor "ask")
+          (switch-to-buffer (current-buffer))
+          (should (cooked-tests--settle
+                   (lambda () (string-search "* red" (cooked-tests--text)))))
+          (should (cooked-tests--settle (lambda () (eq (cooked--policy) 'raw))))
+          (cooked--refresh-keymap)
+          (should cooked-navigate--applies)
+          (should-not cooked-program-line--anchor)
+          (should (eq (key-binding (kbd "C-n")) #'cooked-send-key))
+          (cooked-tests--line-keys "C-n C-n C-p")
+          (should (cooked-tests--settle
+                   (lambda () (string-search "* blue" (cooked-tests--text)))))
+          (should-not cooked-navigate--reading)
+          (cooked-tests--line-keys "RET")
+          (should (cooked-tests--settle
+                   (lambda () (string-search "picked blue" (cooked-tests--text)))))
+          ;; At its prompt, with still no line taken: the way up into the output.
+          (should-not cooked-program-line--anchor)
+          (should (cooked-tests--settle
+                   (lambda () (eq (key-binding (kbd "C-p")) #'previous-line))))
+          ;; And the line typed there is Emacs'.
+          (cooked-tests--settle (lambda () nil) 0.4)
+          (cooked-tests--line-keys "y o")
+          (should (cooked-tests--settle (lambda () cooked--program-line)))
+          (should (equal (cooked--pending-input) "yo")))
+      (when evil (evil-mode 1)))))
+
+(ert-deftest cooked-program-line-leaves-a-shell-its-line-keys ()
+  "A shell that keeps its own line has no line taken, ever, so nothing is guessed
+about it: `C-p' at its prompt stays the way up into the output, whatever is
+before its cursor."
+  (let ((cooked-program-line-editor 'emacs))
+    (cooked-tests--with-line-editor
+      (cl-letf (((symbol-function 'cooked--foreground-program)
+                 (lambda () "zsh")))
+        (cooked-tests--ask)
+        (should-not (cooked-program-line--asking-p))
+        (should (eq (key-binding (kbd "C-p")) #'previous-line))))))
+
 (ert-deftest cooked-program-line-leaves-a-recalled-line-with-the-program ()
   "A key that puts text in the program's line -- its own history, here -- makes
 the line the program's: what is typed after it is not taken as a new line,

@@ -259,16 +259,45 @@ Nil when no line was ever taken, and there is nowhere to compare with."
        (equal (cooked-program-line--place) cooked-program-line--anchor)))
 
 (defun cooked-program-line--asking-p ()
-  "Whether the program is known to be somewhere other than at its empty line.
+  "Whether the program is somewhere other than at its empty line.
 
-Showing a menu or a question, or holding a line of its own.  Known, not
-guessed: nil until a line has been taken and its place learned, and nil while
-Emacs owns the line.  On `cooked-navigate-yield-function', so the keys in
+Showing a menu or a question, or holding a line of its own.  Nil while Emacs
+owns the line.  Once a line has been taken and its place learned this is
+known: the cursor is at that place or it is not.
+
+Before that it is a guess, and one has to be made, because the first thing a
+program shows can be a question -- whether to trust the folder it was started
+in -- and a session attached to has never had a line taken in this buffer.
+See `cooked-program-line--no-prompt-p' for what is guessed from.
+
+On `cooked-navigate-yield-function', so the keys in
 `cooked-navigation-yield-keys' go to a menu that wants them."
   (and (eq cooked-program-line-editor 'emacs)
-       cooked-program-line--anchor
        (not cooked--program-line)
-       (not (cooked-program-line--at-line-p))))
+       (if cooked-program-line--anchor
+           (not (cooked-program-line--at-line-p))
+         (cooked-program-line--no-prompt-p))))
+
+(defun cooked-program-line--no-prompt-p ()
+  "Whether the program's cursor has nothing before it on its row but blanks.
+
+What stands in for `cooked-program-line--anchor' until there is one.  A program
+reading a line has drawn a prompt and put its cursor after it; one showing a
+menu parks its cursor at the left edge of the highlighted row, or hides it
+wherever it finished drawing.  So a cursor with no prompt before it is taken
+for a program that is asking.
+
+Wrong both ways, in the cases that are left: a program that reads a line
+without a prompt has `C-p' and `C-n' sent to it until a line is typed, and a
+menu with its cursor after some text does not get them until then.  Either
+lasts only as long as no line has been taken; the arrow keys are the program's
+throughout.
+
+Never a shell, marked or named: no line of a shell's is taken, so no place
+would ever be learned and the guess would stand for good."
+  (and (memq (cooked--child-policy) '(raw command))
+       (string-match-p "\\`[ \t\u00a0]*\\'" (cdr (cooked-program-line--place)))
+       (not (cooked-program-line--shell-p))))
 
 (defun cooked-program-line--settle ()
   "Stop holding the program's line once the program is seen back at an empty one.

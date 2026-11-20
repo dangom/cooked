@@ -13,6 +13,9 @@ C-q makes it ask a question, as an agent does part-way through its work: the
 prompt is replaced by a list, the Up and Down keys (or C-p and C-n) move through
 it, and Enter picks.  Its own line is kept, and comes back with the prompt.  The
 Up key at the prompt recalls `recalled', as a history would.
+
+Run with the argument `ask', it asks that question before it has read anything,
+as an agent asks whether to trust the folder it was started in.
 """
 
 import os
@@ -70,7 +73,11 @@ def report(text):
     prompt()
 
 
-prompt()
+if sys.argv[1:] == ['ask']:
+    question = True
+    ask()
+else:
+    prompt()
 pending = b''
 while True:
     data = os.read(0, 4096)

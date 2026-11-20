@@ -160,6 +160,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   the buffer reading its output so that the arrows and `RET` no longer reached
   the program either. They go to a program that is asking
   (`cooked-navigation-yield-keys`).
+- A question a program opened with, before any line had been typed to it, did
+  not get `C-p` and `C-n`: an agent asking whether to trust the folder it was
+  started in. Where the program reads was not yet known, the keys moved point,
+  and after that the arrows and `RET` did not reach it either. Until a line has
+  been taken, a cursor with no prompt before it on its row now says the program
+  is asking.
 - Switching to a terminal's window, or clicking into it from another, could put
   it in the reading state on its own when the screen had changed since a command
   was last run there, so `RET` and the arrows did not reach the program.

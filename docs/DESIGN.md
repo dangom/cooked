@@ -1758,8 +1758,19 @@ when: bound through a `menu-item` `:filter` in `cooked-navigate-input-map`, a yi
 has no binding there and the lookup falls through to the forwarding map.
 cooked-navigate.el cannot tell a menu from an empty prompt and sets no function;
 cooked-program-line.el can, once it has seen where the program's line is, and sets
-`cooked-program-line--asking-p`. Until a line has been taken in a session nothing is
-known and the keys are Emacs', as before.
+`cooked-program-line--asking-p`.
+
+Until a line has been taken in a buffer its place is not known, and the first thing a
+program shows can be a question: an agent asks whether to trust the folder it was started
+in before it reads anything. Leaving the keys with Emacs until then made that question
+the one that could not be answered with them. So before a place is known there is a
+guess (`cooked-program-line--no-prompt-p`): a cursor with nothing but blanks before it on
+its row is not after a prompt, and the program is taken to be asking. A menu parks its
+cursor at the left of the highlighted row; a program reading a line has drawn a prompt
+first. The guess is wrong for a program that reads a line with no prompt, which gets
+`C-p` and `C-n` until a line is typed, and for a menu whose cursor follows some text,
+which does not. It is never made about a shell, whose line is never taken and whose
+place would never be learned.
 
 ## Which windows follow: said by commands, per window
 

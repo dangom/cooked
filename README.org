@@ -511,9 +511,11 @@ then sends Enter.
   you have a line half typed. The line steps aside: it is taken off the screen and kept,
   the question is shown as the program drew it, and the keys -- arrows, =C-p= / =C-n=,
   digits, =RET= -- are the program's until it is answered. The line comes back with the
-  prompt. Emacs knows where the prompt is from where it last took a line, so this starts
-  working once a line has been typed in the session (~cooked-program-line-away-delay~,
-  ~cooked-navigation-yield-keys~).
+  prompt. Emacs knows where the prompt is from where it last took a line
+  (~cooked-program-line-away-delay~, ~cooked-navigation-yield-keys~). Before any line has
+  been typed in the buffer -- a program that opens with a question, such as whether to
+  trust the folder -- it goes by the program's cursor: with no prompt before it on its row,
+  the program is taken to be asking, and =C-p= / =C-n= are its own.
 - *The line's edges.* Whatever the program draws after its cursor for an empty line --
   its own cursor, a suggestion -- is hidden while Emacs owns the line, so there is one
   cursor and only your text. Line commands stop at the line's edges, whichever package's
