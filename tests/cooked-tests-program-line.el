@@ -231,6 +231,53 @@ back, in a window -- since it is drawn where the end of the line is."
     (cooked-tests--line-keys "x")
     (should (equal (cooked--pending-input) "xabc"))))
 
+(ert-deftest cooked-program-line-keeps-a-region-through-a-redraw ()
+  "A region drawn in the line Emacs owns is still there, and still the same
+text, after the program redraws: the line is taken out and put back around
+every drain, and the mark goes with it as point does.  It used to be left at
+the start of the row, and the region dropped -- under a program that animates
+its status, as soon as it was drawn."
+  (cooked-tests--with-line-editor
+    (let ((transient-mark-mode t))
+      (cooked-tests--line-keys "h e l l o SPC w o r l d")
+      (should (cooked-tests--settle (lambda () cooked--program-line)))
+      (dolist (keys '("C-a C-SPC C-e" "C-a M-f C-SPC M-f" "C-a M-@"))
+        (execute-kbd-macro (kbd keys))
+        (let ((selected (buffer-substring-no-properties
+                         (region-beginning) (region-end)))
+              (at (point)))
+          (should-not (string-empty-p selected))
+          (cooked--send cooked--session "\C-b")
+          (cooked-tests--settle (lambda () nil) 0.3)
+          (should mark-active)
+          (should (= (point) at))
+          (should (equal (buffer-substring-no-properties
+                          (region-beginning) (region-end))
+                         selected)))
+        (deactivate-mark))
+      (should (equal (cooked--pending-input) "hello world")))))
+
+(ert-deftest cooked-program-line-keeps-a-region-in-rows-redrawn-as-they-were ()
+  "A region drawn in the program's output is kept when the program draws those
+rows again with the text they had, as an agent does to its last reply with
+every frame of its status -- and dropped when the text is other text.  The
+redraw leaves both ends at the start of their rows; they are put back before
+the selection is compared, not after."
+  (cooked-tests--with-line-editor
+    (let ((transient-mark-mode t))
+      (execute-kbd-macro (kbd "C-p C-a C-f C-SPC C-e"))
+      (should (equal (buffer-substring-no-properties (region-beginning) (region-end))
+                     "ine 60"))
+      (cooked--send cooked--session "\C-r")
+      (cooked-tests--settle (lambda () nil) 0.3)
+      (should mark-active)
+      (should (equal (buffer-substring-no-properties (region-beginning) (region-end))
+                     "ine 60"))
+      (cooked--send cooked--session "\C-t")
+      (should (cooked-tests--settle
+               (lambda () (string-search "rewritten" (cooked-tests--text)))))
+      (should-not mark-active))))
+
 (ert-deftest cooked-program-line-keeps-kills-off-the-programs-rows ()
   "\\`C-k' and \\`C-d' at the end of the line leave the program's rows below it
 alone."

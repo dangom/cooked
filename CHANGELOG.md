@@ -160,6 +160,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   the buffer reading its output so that the arrows and `RET` no longer reached
   the program either. They go to a program that is asking
   (`cooked-navigation-yield-keys`).
+- A selection in a running program's buffer only flashed. A region drawn in the
+  line being typed was dropped the next time the program drew anything, and one
+  drawn in rows the program redraws -- an agent's last reply, redrawn with each
+  frame of its status -- was dropped even when the text had not changed. The
+  mark is now carried across a redraw as point is, in the input and on the
+  screen, and a selection is dropped only when its text was rewritten.
 - A question a program opened with, before any line had been typed to it, did
   not get `C-p` and `C-n`: an agent asking whether to trust the folder it was
   started in. Where the program reads was not yet known, the keys moved point,

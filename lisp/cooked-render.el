@@ -401,6 +401,19 @@ around the child's cursor on every drain, so a buffer position cannot survive
 that but an offset into the text can.  Without it, anything that drains while
 the user is editing mid-line -- a background job printing a line, a completion
 reply -- yanks them to the end of what they were typing.")
+  (marking nil :documentation "\
+The mark's offset within the pending input, or nil if it was not in there.
+
+For the reason `editing' is an offset.  The mark is a marker, and the text it is
+in is deleted and inserted again on every drain, which leaves it at the start
+of the row: a region drawn in a line being typed lasted until the child next
+drew anything at all -- under a program that animates a status row, a flash.")
+  (mark-cell nil :documentation "\
+The screen cell the mark sat on, when it was on the screen and not in the input.
+
+For the reason `wandered' is a cell: the row under the mark is deleted and
+inserted again when the child redraws it, with the same text as often as not,
+and the mark is left at the start of it.")
   (follow nil :documentation "\
 Whether to track the child's cursor, or leave point where the user put it.
 
@@ -435,14 +448,20 @@ instead and carried across the scroll; see `cooked--map-cell'."))
 (defun cooked--capture-viewport ()
   "Snapshot the view, before the render invalidates every part of it."
   (cooked--viewport-make
-   :editing (when-let* ((region (cooked--input-region))
-                        ((<= (car region) (point) (cdr region))))
-              (- (point) (car region)))
+   :editing (cooked--input-offset (point))
+   :marking (cooked--input-offset (mark t))
+   :mark-cell (and (mark t)
+                   (not (cooked--input-offset (mark t)))
+                   (cooked--screen-cell (mark t)))
    :follow (and (cooked--follow-p)
                 (>= (point) (cooked--screen-start-position)))
    :wandered (and cooked--wandered (cooked--screen-cell))
    :stale-mark (and cooked-clear-selection-on-output
                     mark-active (mark)
+                    ;; A region inside the pending input is in text the child
+                    ;; cannot rewrite: it is Emacs', put back as it was.
+                    (not (and (cooked--input-offset (point))
+                              (cooked--input-offset (mark))))
                     (>= (max (mark) (point)) (cooked--screen-start-position))
                     (let ((beg (min (mark) (point))) (end (max (mark) (point))))
                       (if (> (- end beg) cooked--stale-mark-compare-limit)
@@ -450,6 +469,14 @@ instead and carried across the scroll; see `cooked--map-cell'."))
                         (buffer-substring-no-properties beg end))))
    :others (cooked--following-windows)
    :held (cooked--held-windows)))
+
+(defun cooked--input-offset (position)
+  "POSITION's offset within the pending input, or nil if it is not in there.
+Nil for a POSITION of nil, which is what a buffer with no mark has for one."
+  (when-let* ((position)
+              (region (cooked--input-region))
+              ((<= (car region) position (cdr region))))
+    (- position (car region))))
 
 (defun cooked--held-windows ()
   "The non-following windows on this buffer whose start is on the live screen.
@@ -518,8 +545,9 @@ pixel, which is what keeps a scroll in progress from being fought."
           (set-window-start w start t)
           (unless (zerop vscroll) (set-window-vscroll w vscroll t)))))))
 
-(defun cooked--place-point (viewport)
-  "Put point where VIEWPORT says it belongs, now that the render is done.
+(defun cooked--point-target (viewport)
+  "Where VIEWPORT says point belongs now that the render is done, or nil.
+Nil when point is to be left where it is.
 
 `editing' outranks `follow' rather than sharing an arm with it: point inside the
 pending input is a claim about the line being typed, and the end of that line is
@@ -532,18 +560,59 @@ The ghost keeps the way back visible; `cooked--snap-to-cursor' takes it."
            ;; Carried across the scroll: the same text, not the same cell, which
            ;; after a scroll holds newer text -- a point parked on a main screen
            ;; that keeps scrolling otherwise walks down through the transcript.
-           (goto-char (cooked--map-cell (cooked-viewport-wandered viewport)
-                                        cooked--scrolled-spans
-                                        cooked--batch-start)))
+           (cooked--map-cell (cooked-viewport-wandered viewport)
+                             cooked--scrolled-spans
+                             cooked--batch-start))
           ;; Clamped for the drain that ends the prompt, where
           ;; `cooked--restore-pending-input' declined and left no region for the
           ;; offset to be an offset into.
           (editing
-           (goto-char (if-let* ((start (cooked--input-start-position)))
-                          (min (+ start editing) (cooked--point-after-input))
-                        (cooked--point-after-input))))
+           (if-let* ((start (cooked--input-start-position)))
+               (min (+ start editing) (cooked--point-after-input))
+             (cooked--point-after-input)))
           ((cooked-viewport-follow viewport)
-           (goto-char (cooked--point-after-input))))))
+           (cooked--point-after-input)))))
+
+(defun cooked--place-point (viewport)
+  "Put point where VIEWPORT says it belongs; see `cooked--point-target'."
+  (when-let* ((target (cooked--point-target viewport)))
+    (goto-char target)))
+
+(defun cooked--restore-mark (viewport)
+  "Put the mark back where VIEWPORT found it, now that the render is done.
+
+In the pending input, at the offset it had there; a region whose input did not
+come back -- the drain ended the prompt -- has nothing left to be a region of,
+and is given up.  On the screen, on the text that was in its cell, carried
+across the scroll as `cooked--place-point' carries a wandered point.  A mark in
+the scrollback is where it was."
+  (if-let* ((marking (cooked-viewport-marking viewport)))
+      (if-let* ((region (cooked--input-region)))
+          (set-marker (mark-marker) (min (+ (car region) marking) (cdr region)))
+        (when mark-active (cooked--deactivate-mark)))
+    (when-let* ((cell (cooked-viewport-mark-cell viewport)))
+      (set-marker (mark-marker)
+                  (cooked--map-cell cell cooked--scrolled-spans
+                                    cooked--batch-start)))))
+
+(defun cooked--clear-stale-mark (viewport)
+  "Drop the selection VIEWPORT found, if the child rewrote the text in it.
+
+Compared between the mark as `cooked--restore-mark' left it and where point is
+about to be put, not where it is: the redraw left point at the start of its
+row, and measured from there a selection in rows redrawn with the very text
+they had read as rewritten.  An agent redraws its last reply with every frame
+of its status, so a region drawn there lasted one frame.
+
+Before point is moved, all the same: under evil this leaves visual state, and
+evil adjusts point on the way into normal state -- so cooked's own pin has to
+be the last thing to speak about where point ends up."
+  (when-let* ((selected (cooked-viewport-stale-mark viewport)))
+    (unless (and (stringp selected) mark-active (mark)
+                 (let ((point (or (cooked--point-target viewport) (point))))
+                   (equal selected (buffer-substring-no-properties
+                                    (min (mark) point) (max (mark) point)))))
+      (cooked--deactivate-mark))))
 
 (defvar cooked--after-scroll-hook nil
   "Run in the buffer after each drain has scrolled its windows.
@@ -985,16 +1054,10 @@ and the region shaped before anything measures it."
     (cooked--split-seam)
     (when cooked-debug (cooked--check-seam))
     (cooked--restore-pending-input pending)
+    (cooked--restore-mark viewport)
     (cooked--protect (and (cooked--input-state-p) (cooked--input-region)))
     (cooked--apply-alt-pin)
-    ;; Before the point block, not after it: under evil this leaves visual state,
-    ;; and evil adjusts point on the way into normal state -- so cooked's own pin
-    ;; has to be the last thing to speak about where point ends up.
-    (when-let* ((selected (cooked-viewport-stale-mark viewport)))
-      (unless (and (stringp selected) mark-active (mark)
-                   (equal selected (buffer-substring-no-properties
-                                    (min (mark) (point)) (max (mark) (point)))))
-        (cooked--deactivate-mark)))
+    (cooked--clear-stale-mark viewport)
     (cooked--place-point viewport)
     (cooked--restore-held-windows viewport)
     ;; Recorded, not merely left in the buffer: a window not showing this buffer

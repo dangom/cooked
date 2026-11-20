@@ -14,6 +14,9 @@ prompt is replaced by a list, the Up and Down keys (or C-p and C-n) move through
 it, and Enter picks.  Its own line is kept, and comes back with the prompt.  The
 Up key at the prompt recalls `recalled', as a history would.
 
+C-r draws the row above the prompt again with the text it has, and C-t with
+other text, as an agent redraws its last reply with each frame of its status.
+
 Run with the argument `ask', it asks that question before it has read anything,
 as an agent asks whether to trust the folder it was started in.
 """
@@ -122,6 +125,10 @@ while True:
         elif byte == b'\x01':
             write('\x1b[?1049h\x1b[Halt screen')
         elif byte == b'\x02':
+            prompt()
+        elif byte in (b'\x12', b'\x14'):
+            write('\x1b[A\r\x1b[K'
+                  + ('line 60' if byte == b'\x12' else 'rewritten') + '\r\n')
             prompt()
         elif menu:
             if byte in (b'1', b'2'):
