@@ -85,6 +85,18 @@ lands in the output, which is then being read, and nothing reaches the program."
     (should (string-match-p "line 7" (buffer-substring (line-beginning-position)
                                                       (line-end-position))))))
 
+(ert-deftest cooked-navigate-escape-reaches-the-program-while-reading ()
+  "Escape is the program's wherever point is: sent from the output, with point
+left where it was and the output still being read."
+  (cooked-tests--with-navigable
+    (cooked-tests--keys "M-<")
+    (should cooked-navigate--reading)
+    (let ((point (point)))
+      (cooked-tests--keys "<escape>")
+      (should (string-match-p (regexp-quote "b'\\x1b'") (cooked-tests--text)))
+      (should cooked-navigate--reading)
+      (should (= (point) point)))))
+
 (ert-deftest cooked-navigate-emacs-motion-leaves-the-input-to-read ()
   "\\`M-<' is Emacs' even at the input, and leaves it: the buffer is then an
 ordinary read-only one, `C-n' is line motion, and nothing reaches the program."

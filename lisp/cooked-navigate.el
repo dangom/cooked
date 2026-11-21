@@ -22,7 +22,8 @@
 ;;   keeps arriving underneath without moving the view.  Typing a character goes
 ;;   back to the input and types it there, the way comint and eshell send you
 ;;   back to the prompt; RET just goes back.  Moving point onto the input row --
-;;   `C-n' off the end of the output -- goes back too.
+;;   `C-n' off the end of the output -- goes back too.  Escape goes to the
+;;   program from wherever point is, and point stays.
 ;;
 ;; Scrolling the window up away from the input counts as leaving it, even when
 ;; point is still on screen, so that live output cannot scroll a window the user
@@ -187,12 +188,30 @@ Built from `cooked-navigation-keys'.")
     (define-key map (kbd "<return>") #'cooked-navigate-return)
     (define-key map (kbd "M-p") #'cooked-navigate-previous-input)
     (define-key map (kbd "M-n") #'cooked-navigate-next-input)
+    (define-key map (kbd "<escape>")
+                '(menu-item "" cooked-navigate-send-key
+                            :filter cooked-navigate--unless-modal))
     map)
   "Keys for reading a navigable program's output, over `cooked-peek-map'.
 
 RET goes back to the input without sending anything: a Return typed while
 reading is far more likely to mean \"take me back\" than \"submit whatever is in
-the prompt\", and the second is one more RET away.")
+the prompt\", and the second is one more RET away.
+
+Escape is the program's wherever point is: it closes what the program has put
+up, goes back a step, interrupts.  None of that is typing, so it is sent from
+where point is and the output goes on being read; see
+`cooked-navigate-send-key'.")
+
+(defvar evil-state)
+
+(defun cooked-navigate--unless-modal (binding)
+  "BINDING, unless Escape is a key of the user's own editing here.
+Under evil it leaves a state, in every state but the one that hands the
+keyboard over, and this map can be looked in ahead of evil's."
+  (unless (and (bound-and-true-p evil-local-mode)
+               (not (eq evil-state 'emacs)))
+    binding))
 
 (defun cooked-navigate--yield-p ()
   "Whether the keys in `cooked-navigation-yield-keys' are the program's now.
@@ -409,6 +428,26 @@ click, which puts point where the user pointed."
       (goto-char (cooked--cursor-position)))
     (setq cooked--wandered nil)
     (cooked--refresh-keymap t)))
+
+(defun cooked-navigate-send-key ()
+  "Send the key that invoked this command to the program, staying where point is.
+
+For Escape while the output is being read.  A character typed there goes back
+to the input, because it is text for the line; Escape is not, and a program
+showing something with no line at all -- a login screen, a picker -- has no
+input for point to be in while its one way out is this key.  Left unbound it
+is Emacs' Meta prefix, and never reaches the program.
+
+Not under evil outside emacs state, where Escape leaves a state.  And only
+the Escape key of a graphical frame, which arrives as `escape'.  On a
+terminal frame it is the byte every Meta chord begins with, and stays the
+prefix; \\[cooked-send-literal-key] sends it from there."
+  (interactive)
+  (let* ((assumed (cooked--assumed-key-protocol))
+         (cooked--keys (or assumed cooked--keys))
+         (cooked--keys-assumed (and assumed t)))
+    (when-let* ((bytes (cooked--encode-event last-command-event)))
+      (cooked--send-to-child bytes))))
 
 (defun cooked-navigate-previous-input (&optional n)
   "Go back to the program's input and recall the Nth previous input there."

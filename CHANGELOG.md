@@ -140,6 +140,11 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- Escape did not reach a program while its output was being read, with point
+  off its input: it was Emacs' Meta prefix there. A program showing something
+  with no line to type into, such as a login screen or a picker, could not be
+  backed out of. Escape is now sent from wherever point is, and point stays.
+  Under evil it remains evil's outside emacs state.
 - "Text is read-only" when typing or killing words quickly in a program's line
   that Emacs edits. The character after a line just taken still carried the
   stickiness of the program's text, and refused whatever was typed before it
