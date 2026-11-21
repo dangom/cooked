@@ -1038,6 +1038,30 @@ submitted while the child is sent an empty line."
 ;; what should have been nothing at all -- and a package's own start-of-line
 ;; command lands in the prompt, where no key that follows can do anything.
 
+(defcustom cooked-confined-commands
+  '(just-one-space cycle-spacing delete-horizontal-space delete-blank-lines
+    delete-indentation fixup-whitespace upcase-word downcase-word
+    capitalize-word transpose-chars transpose-words transpose-lines
+    transpose-sexps kill-word kill-sexp backward-kill-sexp kill-sentence
+    backward-kill-sentence kill-whole-line zap-to-char zap-up-to-char
+    delete-char delete-forward-char)
+  "Editing commands that see only the line being typed, as `kill-line' does.
+
+Each is run with the buffer narrowed to the pending input while point is in
+it.  The line has fields at its edges, and a command that asks about fields
+stops there -- `backward-kill-word', the motions -- but these do not ask: they
+look for a word, a blank or an expression in the characters themselves, find
+the child's just past the end of the line, and are refused the whole edit for
+the part of it that was never the user's.  \\`M-\\' with a space typed before
+the end of the line deleted nothing, the child having drawn a blank of its own
+after it.
+
+A command of your own that edits around point belongs here by name -- one
+that kills a word and then tidies the spaces, say.  It is found whatever key
+or remapping reaches it: see `cooked--confine'."
+  :type '(repeat function)
+  :group 'cooked)
+
 (defvar-local cooked--fenced nil
   "Whether `cooked--fence' has fields up.")
 

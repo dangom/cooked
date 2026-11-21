@@ -272,7 +272,8 @@ it, are `comint-input-ring' and `comint-input-ring-index'.")
 ;; act at its own cursor whatever Emacs was showing.
 
 (defvar-local cooked--command-point nil
-  "Point before the command now running, for `cooked--refused'.
+  "What the command now running found, for `cooked--refused': (POINT . TICK).
+POINT is point and TICK `buffer-chars-modified-tick', both before it ran.
 Nil between commands, and during one that began in another buffer: cleared by
 `cooked--track-wandering', so it is never an older command's.")
 
@@ -664,7 +665,14 @@ case with nothing to read -- the conventional value beats sending nothing."
   (interactive)
   (if (string-empty-p (or (cooked--pending-input) ""))
       (cooked--send-to-child (string (cooked--eof-byte)))
-    (delete-char 1)))
+    (let ((region (cooked--input-region)))
+      (if (and region (<= (car region) (point) (cdr region)))
+          ;; The end of the line is the end of what there is to delete, as it
+          ;; is for `cooked-kill-line': not the child's text, refused.
+          (save-restriction
+            (narrow-to-region (car region) (cdr region))
+            (delete-char 1))
+        (delete-char 1)))))
 
 (defun cooked-send-eof ()
   "Send EOF to the child.
@@ -898,27 +906,47 @@ against the state it will actually run in."
           (setq this-command equivalent))))))
 
 (defun cooked--note-command-point ()
-  "Remember where point is before a command runs."
-  (setq cooked--command-point (point)))
+  "Remember where point is before a command runs, and the text it found."
+  (setq cooked--command-point (cons (point) (buffer-chars-modified-tick))))
 
 (defun cooked--refused (data)
-  "Put point back where it was before a command that was refused its edit.
+  "Put point right after a command that was refused an edit.
+Non-nil if the refusal is not worth reporting.
 
 DATA is the error the command signalled.  Nearly all of a cooked buffer is the
 child's text and read-only, so a kill or a deletion tried on it is refused --
 but most such commands find the far end of what they would remove by *moving
 there* first, and are refused only afterwards: \\`C-k' in the output left point
 at the end of the line, as if it had been a motion.  A command that changed
-nothing should have moved nothing."
-  (when (and (memq (car-safe data) '(text-read-only buffer-read-only))
-             cooked--command-point)
-    (goto-char (min cooked--command-point (point-max)))))
+nothing should have moved nothing, and point goes back where it was.
+
+A command that changed something first is another matter.  One made of two
+edits -- kill the word before point, then tidy the spaces around it -- does the
+first inside the line and is refused the second where the line ends, the child
+having drawn a blank of its own there, which `just-one-space' and
+`delete-horizontal-space' reach for past any field.  Where point was is then
+not a place in this text any more: the line is shorter, and that position is
+further down the screen by as much.  A word killed back across a newline put
+point on the row under the line, in the child's text, where every key that
+followed was a motion through the output.  So point stays where the command
+left it, or at the nearer end of the line if that is outside it; and since
+the edit that was meant happened, nothing is said about the one that was not."
+  (when (memq (car-safe data) '(text-read-only buffer-read-only))
+    (pcase cooked--command-point
+      (`(,point . ,tick)
+       (if (eql tick (buffer-chars-modified-tick))
+           (ignore (goto-char (min point (point-max))))
+         (when-let* ((region (cooked--input-region)))
+           (goto-char (max (car region) (min (point) (cdr region))))
+           t))))))
 
 (defun cooked--command-error (handler data context caller)
   "Run `cooked--refused' on DATA, then HANDLER on DATA, CONTEXT and CALLER.
+HANDLER is not run for a refusal `cooked--refused' says to leave unreported.
 Around `command-error-function', in cooked buffers."
-  (cooked--protect-hook (cooked--refused data))
-  (funcall handler data context caller))
+  ;; `eq' to t: a hook that failed answers with what it reported.
+  (unless (eq t (cooked--protect-hook (cooked--refused data)))
+    (funcall handler data context caller)))
 
 (defun cooked--set-mode (mode)
   "Adopt MODE, switching keymaps and handling secret prompts on a change."
@@ -2355,6 +2383,8 @@ to the child verbatim."
   (add-function :around (local 'command-error-function) #'cooked--command-error)
   (add-hook 'pre-command-hook #'cooked--guard-insertion -50 t)
   (add-hook 'pre-command-hook #'cooked--snap-to-input nil t)
+  ;; After every hook that asks which command is about to run.
+  (add-hook 'pre-command-hook #'cooked--confine 90 t)
   ;; Last before the command and first after it, so no other hook sees a fence.
   (add-hook 'pre-command-hook #'cooked--fence 95 t)
   (add-hook 'post-command-hook #'cooked--unfence -95 t)
@@ -2849,6 +2879,46 @@ Outside the input, `kill-line\='."
           (narrow-to-region (car region) (cdr region))
           (kill-line arg))
       (kill-line arg))))
+
+(defvar cooked--confined nil
+  "The command `cooked-confined-command' is to run, set by `cooked--confine'.")
+
+(defun cooked--confine ()
+  "Hand a command in `cooked-confined-commands' to `cooked-confined-command'.
+
+By substituting `this-command' from `pre-command-hook', not by remapping:
+what is asked is which command is about to run, and a remapping answers only
+for the keys and the remappings that were known when the keymap was built.
+
+Only with point in the pending input, and not with a region that reaches out
+of it: that is a region the user drew, and the command is told what Emacs
+tells it about the child's text rather than that the text is not there."
+  (cooked--protect-hook
+    (when-let* (((memq this-command cooked-confined-commands))
+                ((cooked--input-state-p))
+                (region (cooked--input-region))
+                ((<= (car region) (point) (cdr region)))
+                ((not (and (region-active-p)
+                           (not (<= (car region) (mark) (cdr region)))))))
+      (setq cooked--confined this-command
+            this-command 'cooked-confined-command))))
+
+(defun cooked-confined-command ()
+  "Run the command this one stands in for, seeing only the line being typed.
+Put in its place by `cooked--confine', for `cooked-confined-commands': the
+buffer is narrowed to the pending input for the command, as `cooked-kill-line'
+narrows it for `kill-line'."
+  (interactive)
+  (let ((command (prog1 cooked--confined (setq cooked--confined nil)))
+        (region (cooked--input-region)))
+    (unless (commandp command)
+      (user-error "Not a command to run by hand"))
+    (setq this-command command)
+    (if region
+        (save-restriction
+          (narrow-to-region (car region) (cdr region))
+          (call-interactively command))
+      (call-interactively command))))
 
 (defun cooked-end-of-buffer (&optional arg)
   "Move point to the end of the command being typed, not of the screen.

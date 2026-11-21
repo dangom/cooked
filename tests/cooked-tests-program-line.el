@@ -650,6 +650,139 @@ moves to the end of the line before it is told the text is read-only."
       (cooked--refused err)
       (should (= (point) before)))))
 
+;; Editing at the line's edges.
+
+(defun cooked-tests--kill-word-and-tidy (&optional arg)
+  "Kill the word before point, then leave one space where two would be.
+A command of a user's own, made of two edits: the second reaches for the
+blanks around point, the child's after the line included."
+  (interactive "p")
+  (backward-kill-word arg)
+  (when (eq (char-before) ?\s)
+    (just-one-space)))
+
+(defmacro cooked-tests--with-tidy-key (&rest body)
+  "Run BODY with `cooked-tests--kill-word-and-tidy' on \\`<f7>', everywhere."
+  (declare (indent 0))
+  `(unwind-protect
+       (progn (global-set-key (kbd "<f7>") #'cooked-tests--kill-word-and-tidy)
+              ,@body)
+     (global-unset-key (kbd "<f7>"))))
+
+(defun cooked-tests--command-keys (keys)
+  "Press KEYS as the command loop takes them, and return the error if any.
+A keyboard macro ends at an error before `command-error-function' and
+`post-command-hook' have run; here they do.  Second in the list returned is
+whether the error was reported."
+  (let (err reported)
+    (condition-case e
+        (execute-kbd-macro (kbd keys))
+      (error
+       (setq err e)
+       (when (derived-mode-p 'cooked-mode)
+         (cooked--command-error (lambda (&rest _) (setq reported t)) e "" nil))
+       (deactivate-mark)
+       (run-hooks 'post-command-hook)))
+    (list err reported)))
+
+(defun cooked-tests--type-lines (&rest lines)
+  "Type LINES into the program's line, which Emacs takes at the first key."
+  (execute-kbd-macro (kbd (substring (car lines) 0 1)))
+  (should (cooked-tests--settle (lambda () cooked--program-line)))
+  (execute-kbd-macro (substring (car lines) 1))
+  (dolist (line (cdr lines))
+    (execute-kbd-macro (kbd "C-c SPC"))
+    (execute-kbd-macro line))
+  (cooked-tests--settle (lambda () nil) 0.3)
+  (should (equal (cooked--pending-input) (string-join lines "\n"))))
+
+(ert-deftest cooked-program-line-keeps-point-when-half-a-command-is-refused ()
+  "A command that kills a word and is then refused an edit past the end of the
+line leaves point in the line, and says nothing: the word is gone, and where
+point was before it is by now a place on the row under the line."
+  (cooked-tests--with-line-editor
+    (cooked-tests--type-lines "aaa bb" "cc dd")
+    (cooked-tests--with-tidy-key
+     (let ((cooked-confined-commands nil))
+      (pcase-let ((`(,err ,reported) (cooked-tests--command-keys "<f7>")))
+        (should (eq (car err) 'text-read-only))
+        (should-not reported))
+      (should (equal (cooked--pending-input) "aaa bb\ncc "))
+      (should (= (point) (cdr (cooked--input-region))))
+      (cooked-tests--command-keys "<f7>")
+      (should (equal (cooked--pending-input) "aaa bb\n"))
+      ;; Across the newline: where point was is now on the row under the line.
+      (pcase-let ((`(,err ,reported) (cooked-tests--command-keys "<f7>")))
+        (should (eq (car err) 'text-read-only))
+        (should-not reported))
+      (should (equal (cooked--pending-input) "aaa "))
+      (should (= (point) (cdr (cooked--input-region))))
+      (should-not cooked-navigate--reading)))))
+
+(ert-deftest cooked-program-line-confines-commands-that-ask-no-field ()
+  "\\`M-\\' at the end of the line deletes the blank typed there, and is not
+refused for the one the program drew after it."
+  (cooked-tests--with-line-editor
+    (cooked-tests--type-lines "aaa bb ")
+    (should (equal (car (cooked-tests--command-keys "M-\\")) nil))
+    (should (equal (cooked--pending-input) "aaa bb"))
+    (cooked-tests--command-keys "M-u")
+    (should (equal (cooked--pending-input) "aaa bb"))
+    (should (= (point) (cdr (cooked--input-region))))))
+
+(defconst cooked-tests--edit-keys
+  '("<f7>" "M-DEL" "M-d" "C-k" "DEL" "C-d" "C-a" "C-e" "M-b" "M-f" "C-b" "C-f"
+    "M-SPC" "M-\\" "C-t" "M-t" "M-c" "M-u" "M-l" "x" "y" "SPC" "SPC" "NL"
+    "C-y" "M-^" "C-o" "C-SPC" "M-z x" "C-x C-o" "C-M-k" "M-k")
+  "Keys `cooked-program-line-edits-as-a-buffer-of-its-own' presses.
+NL is a newline, by whichever key types one.")
+
+(ert-deftest cooked-program-line-edits-as-a-buffer-of-its-own ()
+  "Editing commands do to the line what they do to a buffer holding only it.
+
+The same keys, drawn at random from `cooked-tests--edit-keys', go to a line of
+three rows and to a plain buffer with the same text.  After each the text and
+point agree, point is in the line, and no edit was refused: nothing the program
+drew around the line was looked at.  A run ends when the line is emptied."
+  (let ((cooked-confined-commands
+         (cons 'cooked-tests--kill-word-and-tidy cooked-confined-commands)))
+    (cooked-tests--with-tidy-key
+        (dotimes (seed 8)
+          (random (number-to-string seed))
+          (cooked-tests--with-line-editor
+            (cooked-tests--type-lines "aaa bb" "ccc dd" "ee ff")
+            (let ((term (current-buffer))
+                  (model (generate-new-buffer " *cooked-model*"))
+                  (kill-ring nil)
+                  (trail nil))
+              (unwind-protect
+                  (catch 'emptied
+                    (with-current-buffer model
+                      (insert "aaa bb\nccc dd\nee ff")
+                      (setq buffer-undo-list nil))
+                    (dotimes (_ 40)
+                      (let* ((key (seq-random-elt cooked-tests--edit-keys))
+                             (refused (car (cooked-tests--command-keys
+                                            (if (equal key "NL") "C-c SPC" key)))))
+                        (push key trail)
+                        (cooked-tests--settle (lambda () nil) 0.02)
+                        (switch-to-buffer model)
+                        (cooked-tests--command-keys (if (equal key "NL") "C-j" key))
+                        (let ((text (buffer-string))
+                              (point (1- (point))))
+                          (switch-to-buffer term)
+                          (ert-info ((format "seed %d, keys %s" seed
+                                             (string-join (reverse trail) " ")))
+                            (when (string-empty-p text)
+                              (should-not cooked--program-line)
+                              (throw 'emptied nil))
+                            (should-not (memq (car refused)
+                                              '(text-read-only buffer-read-only)))
+                            (should (equal (cooked--pending-input) text))
+                            (should (= (- (point) (car (cooked--input-region)))
+                                       point)))))))
+                (kill-buffer model))))))))
+
 ;; A program that asks.
 
 (defun cooked-tests--ask ()

@@ -140,6 +140,19 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- Point jumping to the row under a program's line, and staying there, after a
+  command that kills a word and then tidies the spaces around point. The
+  second edit reached the blank the program draws after the line and was
+  refused, and point was put back where it had been before the first, which
+  in the shortened line was a place further down the screen. A refused command
+  now has point put back only if it changed nothing; otherwise point stays in
+  the line and nothing is reported.
+- `M-\`, `M-SPC`, `M-u`, `M-l`, `M-c`, `C-t`, `C-x C-o`, `C-M-k` and other
+  commands that do not ask about fields were refused at the end of the line
+  being typed, for the program's text after it. Those in
+  `cooked-confined-commands` now run with the buffer narrowed to the line, as
+  `C-k` already did; a command of your own can be added by name. `C-d` at the
+  end of a line that is not empty says "End of buffer".
 - Escape did not reach a program while its output was being read, with point
   off its input: it was Emacs' Meta prefix there. A program showing something
   with no line to type into, such as a login screen or a picker, could not be
