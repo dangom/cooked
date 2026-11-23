@@ -14,6 +14,8 @@ prompt is replaced by a list, the Up and Down keys (or C-p and C-n) move through
 it, and Enter picks.  Its own line is kept, and comes back with the prompt.  The
 Up key at the prompt recalls `recalled', as a history would.
 
+C-v puts `[img]' in the line, as an agent pastes a picture from the clipboard.
+
 C-r draws the row above the prompt again with the text it has, and C-t with
 other text, as an agent redraws its last reply with each frame of its status.
 
@@ -139,6 +141,9 @@ while True:
             report('sent: ' + repr(sent))
         elif byte == b'\x7f':
             line = line[:-1]
+            prompt()
+        elif byte == b'\x16':
+            line += '[img]'
             prompt()
         elif byte == b'?' and not line:
             menu = True

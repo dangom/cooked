@@ -42,6 +42,10 @@
 ;; - The keys in `cooked-program-line-pass-keys', sent to the program while
 ;;   Emacs keeps the line: Escape to interrupt, Shift-Tab to change mode.  Any
 ;;   other key the program wants goes by `C-c C-q' (`cooked-send-literal-key').
+;; - The keys in `cooked-program-line-hand-over-keys', pressed in the line: by
+;;   default `C-v', an agent's paste of a picture from the clipboard.  Such a
+;;   key puts something in the program's own line, so the program is given
+;;   what was typed first and keeps the line until it ends.
 ;; - Everything at an empty line, where there is no line for Emacs to own.
 ;;
 ;; Emacs gives the line up when it is emptied, when it is submitted, and when
@@ -86,6 +90,7 @@
 (declare-function cooked--refresh-keymap "cooked-mode" (&optional quiet))
 (declare-function cooked--history-record "cooked-mode" (text))
 (declare-function cooked-dock-select-input "cooked-dock" ())
+(declare-function cooked-delegate-this-key "cooked-keys" ())
 (declare-function cooked--bracketed-paste-p "ext:cooked-core")
 (declare-function cooked--send "ext:cooked-core")
 (defvar cooked-drain-functions)
@@ -130,6 +135,29 @@ in that line; \\`C-c C-q' sends any other key the same way."
          (set-default symbol value)
          (when (fboundp 'cooked-program-line--rebuild-pass-map)
            (cooked-program-line--rebuild-pass-map)))
+  :group 'cooked)
+
+(defcustom cooked-program-line-hand-over-keys '("C-v")
+  "Keys that give the line Emacs owns back to the program, and are then sent.
+
+Each is a `kbd' string.  For a key that puts something into the program's own
+line, which Emacs cannot type for it: an agent pastes a picture from the
+clipboard on \\`C-v' and shows it in its line as a placeholder.  Sent with
+`cooked-program-line-pass-keys' the placeholder would land in a line the
+program believes empty, with what was typed held back by Emacs beside it; so
+the program is handed what was typed first, with its cursor where point was,
+and then the key -- and the line is the program's to edit until it is sent or
+emptied, as one begun with a character from
+`cooked-program-line-delegate-characters' is.
+
+Only with point in the line.  Anywhere else the key is Emacs', as every key is
+there: \\`C-v' scrolls the output being read.  At an empty line there is
+nothing to hand over, and the key is the program's already."
+  :type '(repeat string)
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (fboundp 'cooked-program-line--rebuild-hand-over-map)
+           (cooked-program-line--rebuild-hand-over-map)))
   :group 'cooked)
 
 (defcustom cooked-program-line-shells
@@ -760,6 +788,31 @@ Built from `cooked-program-line-pass-keys'.")
 
 (cooked-program-line--rebuild-pass-map)
 
+(defun cooked-program-line--in-line-p ()
+  "Whether point is in the line Emacs owns, and the line is on the screen."
+  (and cooked--program-line
+       (not (overlayp cooked-program-line--veiled))
+       (when-let* ((region (cooked--input-region)))
+         (<= (car region) (point) (cdr region)))))
+
+(defvar cooked-program-line-hand-over-map (make-sparse-keymap)
+  "Keys that give the line Emacs owns back to the program when pressed in it.
+Built from `cooked-program-line-hand-over-keys'.")
+
+(defun cooked-program-line--rebuild-hand-over-map ()
+  "Rebuild `cooked-program-line-hand-over-map'.
+Each key is bound through a filter that answers nothing with point off the
+line: the lookup then goes on past this map, to what the key does in Emacs."
+  (setcdr cooked-program-line-hand-over-map nil)
+  (dolist (key cooked-program-line-hand-over-keys)
+    (define-key cooked-program-line-hand-over-map (kbd key)
+                `(menu-item "" cooked-delegate-this-key
+                            :filter ,(lambda (binding)
+                                       (and (cooked-program-line--in-line-p)
+                                            binding))))))
+
+(cooked-program-line--rebuild-hand-over-map)
+
 (defvar cooked-program-line-hold-map
   (let ((map (make-sparse-keymap)))
     ;; ASCII is bound to `cooked-send-key' outright, other characters reach it
@@ -771,8 +824,9 @@ Built from `cooked-program-line-pass-keys'.")
 
 (defvar cooked-program-line--map-alist
   `((cooked--program-line . ,cooked-program-line-pass-map)
+    (cooked--program-line . ,cooked-program-line-hand-over-map)
     (cooked-program-line--submit . ,cooked-program-line-hold-map))
-  "The `emulation-mode-map-alists' entry activating the pass and hold keys.")
+  "The `emulation-mode-map-alists' entry for the pass, hand-over and hold keys.")
 
 (add-to-list 'emulation-mode-map-alists 'cooked-program-line--map-alist)
 

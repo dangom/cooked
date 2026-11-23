@@ -47,9 +47,13 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   menu does not echo, so its keys stay the program's. Characters in
   `cooked-program-line-delegate-characters` (`/`, `@`, `!`) leave the line with
   the program, and `cooked-program-line-pass-keys` (Escape, Shift-Tab) reach it
-  while Emacs keeps the line. What the program draws after its cursor (its own
-  cursor, a suggestion) is hidden while Emacs owns the line, every line command
-  stops at the line's edges, and the program's rows below it are read-only.
+  while Emacs keeps the line. The keys in `cooked-program-line-hand-over-keys`
+  (`C-v`, an agent's paste of a picture) pressed in the line hand the program
+  what was typed and then the key, and the line is the program's until sent;
+  with point off the line they keep their Emacs meaning. What the program
+  draws after its cursor (its own cursor, a suggestion) is hidden while Emacs
+  owns the line, every line command stops at the line's edges, and the
+  program's rows below it are read-only.
   Shells and remote logins such as `ssh` are never taken, marked or not
   (`cooked-program-line-shells`); a shell's line is `cooked-shell-line-editor`'s. Off by default.
 - `cooked-drain-functions`, run once each drain is applied, for packages that

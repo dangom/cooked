@@ -501,6 +501,10 @@ then sends Enter.
   the program, so an agent's command menu, file picker and shell mode work as usual
   (~cooked-program-line-delegate-characters~). Escape and Shift-Tab reach the program while
   Emacs keeps the line (~cooked-program-line-pass-keys~); =C-c C-q= sends any other key.
+  =C-v= pressed in the line -- an agent's paste of a picture from the clipboard -- hands
+  the program what was typed and then the key, so the picture lands where point was, and
+  the line is the program's until it is sent (~cooked-program-line-hand-over-keys~). With
+  point anywhere else =C-v= scrolls, as it does in Emacs.
   An empty line belongs to the program, so every key at it is the program's. So does a
   line the program filled in itself -- recalled from its history, pasted, completed -- until
   it is sent or cleared. A shell is

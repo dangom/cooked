@@ -428,6 +428,33 @@ line keeps the line the program's until it ends."
     (cooked-tests--line-keys "x")
     (should (cooked-tests--settle (lambda () cooked--program-line)))))
 
+(ert-deftest cooked-program-line-hands-the-line-over-for-a-key-that-fills-it ()
+  "A key in `cooked-program-line-hand-over-keys' pressed in the line Emacs owns
+-- `C-v', an agent's paste of a picture -- reaches the program after what was
+typed, so what it puts in its line lands in that line and both are sent
+together.  With point off the line the key is Emacs', and scrolls."
+  (cooked-tests--with-line-editor
+    (cooked-tests--line-keys "a b")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    ;; Reading the output: not the program's.
+    (cooked-tests--line-keys "M-v")
+    (should cooked-navigate--reading)
+    (should (eq (key-binding (kbd "C-v")) 'scroll-up-command))
+    (goto-char (cdr (cooked--input-region)))
+    (cooked-tests--line-keys "C-v")
+    (should-not cooked--program-line)
+    (should (cooked-tests--settle
+             (lambda () (string-search "\n> ab[img]" (cooked-tests--text)))))
+    ;; The line is the program's now: what is typed is not asked about.
+    (cooked-tests--line-keys "c")
+    (cooked-tests--settle (lambda () nil) cooked-program-line-echo-timeout)
+    (should-not cooked--program-line)
+    (cooked-tests--line-keys "RET")
+    (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "ab[img]c"))))
+    ;; And Emacs' again for the next one.
+    (cooked-tests--line-keys "x")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))))
+
 (ert-deftest cooked-program-line-sends-newlines-as-text ()
   "A line with a newline in it reaches the program as one paste, not as two
 Enters."
