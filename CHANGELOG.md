@@ -144,6 +144,12 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- A long line typed to a program with `cooked-program-line-editor` at `emacs`
+  pushed the rows under it, the rest of the program's input box and its status
+  line, out of the bottom of the window as it wrapped, until the program next
+  drew something. The line now grows upwards: the last row stays on the
+  window's last line and the output above moves up, as it already did in a
+  dock.
 - Point jumping to the row under a program's line, and staying there, after a
   command that kills a word and then tidies the spaces around point. The
   second edit reached the blank the program draws after the line and was

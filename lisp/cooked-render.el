@@ -778,6 +778,22 @@ the pinned start any vertical scroll at all is already past the bottom.
 Clamping only a start beyond the pin let each notch slide the text up by a few
 pixels and the row after snap it back: a sawtooth as fast as the wheel turned.
 
+The other way round is put right here too: a window that follows and has been
+left short of the bottom.  No scroll does that -- a scroll up is a window
+being read, and `cooked--note-scrolled-windows' has just said so -- but typing
+does.  A line Emacs owns is buffer text, and one typed past the window's edge
+wraps onto a row of its own, which pushes every row under it down by one: the
+rest of the program's input box, its status line.  The window's start stayed
+where it was, so they went out of the bottom of the window, and stayed out
+until the program next drew something and a drain pinned the bottom again --
+which, the program having been sent nothing, could be a long time.  The line
+grows upwards instead, as it does in a terminal whose program draws it: the
+last row stays on the window's last line and the rows above move up.  Only
+when point is still in view afterwards: a line taller than the window cannot
+show both its ends, and the one being typed at is redisplay's to keep.  And
+never a dock, which cooked-dock.el pins against the last row with text on it
+rather than the last row.
+
 WINDOW defaults to the selected window, which is the one this runs for from
 the buffer's own hook; `cooked--note-scrolled-windows' passes the others."
   (let ((window (or window (selected-window))))
@@ -793,7 +809,11 @@ the buffer's own hook; `cooked--note-scrolled-windows' passes the others."
                    (cooked--bottom-start window)))
             (start (window-start window)))
         (when (or (> start top)
-                  (and (= start top) (> (window-vscroll window t) 0)))
+                  (and (= start top) (> (window-vscroll window t) 0))
+                  (and (< start top)
+                       (not (cooked--window-held-p window))
+                       (not (cooked--dock-window-p window))
+                       (>= (window-point window) top)))
           (set-window-vscroll window 0 t)
           (set-window-start window top t))))))
 

@@ -587,6 +587,39 @@ where it is, and RET from the dock submits and follows again."
           (should (cooked-tests--settle (lambda () (cooked-tests--sent-p "abc"))))
           (should-not (window-parameter main 'cooked-dock)))))))
 
+(ert-deftest cooked-program-line-grows-upwards-in-a-window-that-follows ()
+  "A line Emacs owns that wraps onto another row keeps the window's last row on
+the last row of the screen -- the status under the line stays in view and the
+rows above move up -- without waiting for the program to draw, which it has no
+reason to: it was sent nothing.  Rubbing the row out again moves them back.  A
+window scrolled away from the bottom is being read, and is left where it is."
+  (cooked-tests--with-line-editor
+    (delete-other-windows)
+    (cooked-tests--line-keys "a b")
+    (should (cooked-tests--settle (lambda () cooked--program-line)))
+    (let* ((window (selected-window))
+           (start (window-start window))
+           (row (make-string (window-body-width window) ?x)))
+      (should (cooked--shows-bottom-p window))
+      ;; No settling between the keys and the look: nothing may depend on a
+      ;; drain.
+      (execute-kbd-macro row)
+      (should (cooked--shows-bottom-p window))
+      (should (> (window-start window) start))
+      (should (<= (window-start window) (point)))
+      (let ((grown (window-start window)))
+        (execute-kbd-macro row)
+        (should (cooked--shows-bottom-p window))
+        (should (> (window-start window) grown))
+        (execute-kbd-macro (kbd (format "C-u %d DEL" (length row))))
+        (should (cooked--shows-bottom-p window))
+        (should (= (window-start window) grown))
+        ;; Held, as a scroll by the wheel leaves it: typing does not move it.
+        (set-window-start window start)
+        (cooked--hold-window window t)
+        (execute-kbd-macro row)
+        (should (= (window-start window) start))))))
+
 ;; The one invariant: only the line is editable.
 
 (defun cooked-tests--editable-spans ()
