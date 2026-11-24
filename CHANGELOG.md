@@ -12,6 +12,11 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Added
 
+- Public names for what other packages build on: `cooked-host-executable`,
+  `cooked-host-sessions-directory`, `cooked-host-session`,
+  `cooked-runs-directory` and `cooked-popup-frame`. The private names they
+  replace (`cooked-host--program`, `cooked-host--directory`,
+  `cooked-host--session`, `cooked-run--directory`) remain as obsolete aliases.
 - `cooked-exec` runs a program other than a shell, such as tmux, as the
   terminal's child. `cooked-keymap-exceptions` keeps keys such as `C-x`, `M-x`
   and `M-:` with Emacs. Graphical control chords, Shift-Tab and yank are

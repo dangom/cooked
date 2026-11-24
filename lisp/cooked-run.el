@@ -47,7 +47,9 @@ to a session."
   "Seconds between looks at a run that is being followed."
   :type 'number)
 
-(defun cooked-run--directory ()
+(define-obsolete-function-alias 'cooked-run--directory #'cooked-runs-directory "1.0.0")
+
+(defun cooked-runs-directory ()
   "The directory runs are kept in."
   (file-name-as-directory
    (or cooked-run-directory
@@ -99,7 +101,7 @@ to a session."
   "The runs of SESSION, by default the current buffer's, oldest first.
 Each a plist; see `cooked-run--read'."
   (when-let* ((name (cooked-run--session session))
-              (dir (expand-file-name name (cooked-run--directory)))
+              (dir (expand-file-name name (cooked-runs-directory)))
               ((file-directory-p dir)))
     ;; A run's name begins with when it started, so their order is their age.
     (delq nil (mapcar #'cooked-run--read

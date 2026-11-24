@@ -98,7 +98,15 @@ session -- filed under that name by the program -- finds the buffer for it.")
 
 ;;;; The program
 
-(defun cooked-host--program ()
+;; What other packages build on (coterie starts its agents with the program
+;; and the directory; a configuration asks after a session) has public names:
+;; `cooked-host-executable', `cooked-host-sessions-directory' and
+;; `cooked-host-session'.  The names they had are kept for a while.
+(define-obsolete-function-alias 'cooked-host--program #'cooked-host-executable "1.0.0")
+(define-obsolete-function-alias 'cooked-host--directory #'cooked-host-sessions-directory "1.0.0")
+(define-obsolete-function-alias 'cooked-host--session #'cooked-host-session "1.0.0")
+
+(defun cooked-host-executable ()
   "The `cooked-host' program, or an error saying how to get one."
   (let ((program (or cooked-host-program
                      (expand-file-name "target/release/cooked-host" (cooked--root)))))
@@ -107,7 +115,7 @@ session -- filed under that name by the program -- finds the buffer for it.")
                   (abbreviate-file-name program)))
     program))
 
-(defun cooked-host--directory ()
+(defun cooked-host-sessions-directory ()
   "The directory hosted sessions live in; the same rule src/host.rs follows."
   (file-name-as-directory
    (expand-file-name
@@ -135,13 +143,13 @@ environment rather than the project's, without the terminal settings
     (with-temp-buffer
       (let* ((exec-path path)
              (process-environment
-              (cons (concat "COOKED_HOST_DIR=" (directory-file-name (cooked-host--directory)))
+              (cons (concat "COOKED_HOST_DIR=" (directory-file-name (cooked-host-sessions-directory)))
                     environment))
              (status (if input
                          (progn (insert input)
                                 (apply #'call-process-region (point-min) (point-max)
-                                       (cooked-host--program) t t nil arguments))
-                       (apply #'call-process (cooked-host--program) nil t nil arguments))))
+                                       (cooked-host-executable) t t nil arguments))
+                       (apply #'call-process (cooked-host-executable) nil t nil arguments))))
         (unless (eql status 0)
           (user-error "%s" (string-trim (buffer-string))))
         (buffer-string)))))
@@ -157,7 +165,7 @@ which is what a reboot leaves behind -- `attached', `socket', and under
                                             :false-object nil))
           (split-string (cooked-host--call nil "list") "\n" t)))
 
-(defun cooked-host--session (name)
+(defun cooked-host-session (name)
   "The session called NAME, as `cooked-host-sessions' describes it, or nil."
   (cl-find name (cooked-host-sessions)
            :key (lambda (entry) (alist-get 'name (alist-get 'session entry)))
@@ -165,7 +173,7 @@ which is what a reboot leaves behind -- `attached', `socket', and under
 
 (defun cooked-host--live-p (name)
   "Whether a host is still answering for the session NAME."
-  (member (alist-get 'state (cooked-host--session name)) '("live" "exited")))
+  (member (alist-get 'state (cooked-host-session name)) '("live" "exited")))
 
 (defun cooked-host--safe-name (text)
   "TEXT as something that can name a session: see `valid_name' in src/host.rs."
@@ -239,7 +247,7 @@ size, and being told that it has is enough."
 
 (defun cooked-host--attach (name buffer)
   "Make BUFFER a terminal on the hosted session NAME, and return BUFFER."
-  (let ((socket (expand-file-name (concat name ".sock") (cooked-host--directory))))
+  (let ((socket (expand-file-name (concat name ".sock") (cooked-host-sessions-directory))))
     (with-current-buffer buffer
       (when cooked--session
         (user-error "cooked: %s already has a session" (buffer-name)))
@@ -347,7 +355,7 @@ of one to create, for a caller that has its own idea of what it is called;
 it is not used if some buffer is attached to NAME already."
   (interactive (list (cooked-host--read "Attach to session: ")))
   (let ((buffer (or (cooked-host--buffer name)
-                    (let* ((session (alist-get 'session (cooked-host--session name)))
+                    (let* ((session (alist-get 'session (cooked-host-session name)))
                            (directory (file-name-as-directory
                                        (or (alist-get 'cwd session) default-directory)))
                            (buffer (if buffer
@@ -383,7 +391,7 @@ BUFFER is a buffer or the name of one to create, and is returned; it is not
 displayed.  `get-buffer-process' answers for it while it is attached."
   (let ((buffer (get-buffer-create buffer)))
     (unless (cooked-host--live-p name)
-      (when (cooked-host--session name)
+      (when (cooked-host-session name)
         (cooked-host-kill name))
       (with-current-buffer buffer
         (cooked-host-start name (cons program args) default-directory nil note)))
@@ -417,7 +425,7 @@ name of one to create, and is returned; it is not displayed."
   (let ((directory (or directory default-directory)))
     (if (cooked-host--live-p name)
         (cooked-host-attach name buffer)
-      (when (cooked-host--session name)
+      (when (cooked-host-session name)
         (cooked-host-kill name))
       (cooked-host--start-shell name directory (get-buffer-create buffer)))))
 
@@ -428,9 +436,9 @@ BUFFER is the buffer to attach, or nil to make one."
   ;; which is no longer as long as the buffer.  The host keeps a directory per
   ;; session for exactly that and removes it with the session, so the files are
   ;; generated there and are nobody's to clean up from here.
-  (let ((scratch (expand-file-name (concat name ".d/") (cooked-host--directory))))
+  (let ((scratch (expand-file-name (concat name ".d/") (cooked-host-sessions-directory))))
     (make-directory scratch t)
-    (set-file-modes (cooked-host--directory) #o700)
+    (set-file-modes (cooked-host-sessions-directory) #o700)
     (pcase-let ((`(,argv ,env ,_)
                  (let ((temporary-file-directory scratch))
                    (cooked--shell-invocation cooked-shell))))
@@ -540,7 +548,7 @@ on hosted sessions, to say what makes one of its buffers its own.")
 (defun cooked-host--restore (record)
   "Bring back the hosted buffer RECORD describes; the buffer, or nil."
   (when-let* ((name (plist-get record :host))
-              (entry (cooked-host--session name))
+              (entry (cooked-host-session name))
               (buffer (cooked-host--revive entry)))
     (with-current-buffer buffer
       (when-let* ((wanted (plist-get record :buffer))

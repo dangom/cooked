@@ -129,6 +129,11 @@ after which a buffer `cooked-popup-file' made is gone.")
   "Whether BUFFER is the one the pop-up is showing."
   (eq (cooked-popup--showing) buffer))
 
+(defun cooked-popup-frame ()
+  "The frame pop-ups are shown in, if there is one; nil otherwise.
+For telling whether a frame is the pop-up's: (eq frame (cooked-popup-frame))."
+  (and (frame-live-p cooked-popup--frame) cooked-popup--frame))
+
 (defun cooked-popup--frame-for (parent)
   "The frame pop-ups are shown in over PARENT, made if there is none."
   (unless (and (frame-live-p cooked-popup--frame)

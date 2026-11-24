@@ -84,7 +84,7 @@ attached later is built from what the child wrote before it existed."
         (should-not (process-query-on-exit-flag (get-buffer-process buffer))))
       (kill-buffer buffer)
       (should (cooked-tests-host--alive-p pid))
-      (should (equal (alist-get 'state (cooked-host--session "echo")) "live"))
+      (should (equal (alist-get 'state (cooked-host-session "echo")) "live"))
       ;; Typed at it while nothing was attached.
       (cooked-host-send "echo" "beta\n")
       (with-current-buffer (cooked-host-attach "echo")
@@ -175,7 +175,7 @@ with the locals somebody asked to have kept, and only those."
           (kill-buffer restored)))
       ;; A session that is gone is not somebody else's to make a buffer of.
       (cooked-host-kill "rec")
-      (should (cooked-tests--settle (lambda () (null (cooked-host--session "rec")))))
+      (should (cooked-tests--settle (lambda () (null (cooked-host-session "rec")))))
       (should (eq (cooked-host--persp-load saved) 'skip)))))
 
 (ert-deftest cooked-host-a-cut-off-session-is-revived-by-whoever-knows-it ()
@@ -305,8 +305,8 @@ anything else is not this file\\='s to run twice."
       (with-current-buffer (car buffers)
         (should (equal cooked-host-name "was-shell"))
         (should (cooked--live-p cooked--session)))
-      (should (equal (alist-get 'state (cooked-host--session "was-shell")) "live"))
-      (should (equal (alist-get 'state (cooked-host--session "was-other")) "dead")))))
+      (should (equal (alist-get 'state (cooked-host-session "was-shell")) "live"))
+      (should (equal (alist-get 'state (cooked-host-session "was-other")) "dead")))))
 
 (provide 'cooked-tests-host)
 
