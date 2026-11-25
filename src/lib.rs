@@ -257,6 +257,13 @@ pub unsafe extern "C" fn emacs_module_init(runtime: *mut Runtime) -> std::ffi::c
         /// query arrives, rather than by waking Lisp to ask about a theme it already said.
         "cooked--set-color-scheme" 2..=2 => set_color_scheme;
 
+        /// Tell SESSION whether to answer DECRQCRA, the checksum of a screen rectangle.
+        ///
+        /// ON non-nil answers it.  A session never told does not: the report hands the
+        /// child what is on the screen, a cell at a time, on its own input.  See
+        /// `cooked-checksum-reports'.
+        "cooked--set-checksum-reports" 2..=2 => set_checksum_reports;
+
         /// Send SIGNAL to SESSION's foreground group.
         ///
         /// SIGNAL is a symbol naming it -- `sigtstp', `sigcont' -- or, for a caller with a
@@ -680,6 +687,11 @@ fn set_color_scheme(env: Env, args: &[Value]) -> Result<Value> {
     };
     let owed = handle(env, args[0])?.set_color_scheme(scheme);
     env.into_lisp(owed.as_deref())
+}
+
+fn set_checksum_reports(env: Env, args: &[Value]) -> Result<Value> {
+    handle(env, args[0])?.set_checksum_reports(!env.is_nil(args[1]));
+    Ok(env.nil())
 }
 
 fn signal(env: Env, args: &[Value]) -> Result<Value> {

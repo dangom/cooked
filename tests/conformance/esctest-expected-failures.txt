@@ -1,0 +1,319 @@
+# Tests of esctest that cooked is known to fail, one name per line.
+#
+# `make conformance' fails on a failure that is not listed here, and on a listed
+# test that passes, so this list only changes on purpose.  Lines starting with
+# `#' are comments, and each group says why its tests fail.
+#
+# From esctest2 at 2798f12, run with --expected-terminal=xterm
+# --xterm-checksum=334 --max-vt-level=4.
+
+# Left and right margins (DECLRMM, mode 69, and DECSLRM) are not implemented.
+# These tests set them and then check another command against them.
+BSTests.test_BS_ReverseWrapWithLeftRight
+BSTests.test_BS_ReversewrapFromLeftEdgeToRightMargin
+BSTests.test_BS_StopsAtLeftMargin
+CHATests.test_CHA_RespectsOriginMode
+CHTTests.test_CHT_IgnoresScrollingRegion
+CNLTests.test_CNL_StopsAtBottomLineWhenBegunBelowScrollRegion
+CNLTests.test_CNL_StopsAtBottomMarginInScrollRegion
+CPLTests.test_CPL_StopsAtTopLineWhenBegunAboveScrollRegion
+CPLTests.test_CPL_StopsAtTopMarginInScrollRegion
+CRTests.test_CR_MovesToLeftMarginWhenLeftOfLeftMarginInOriginMode
+CRTests.test_CR_MovesToLeftMarginWhenRightOfLeftMargin
+CRTests.test_CR_StaysPutWhenAtLeftMargin
+CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion
+CUFTests.test_CUF_StopsAtRightMarginInScrollRegion
+CUPTests.test_CUP_RespectsOriginMode
+DCHTests.test_DCH_DeleteAllWithMargins
+DCHTests.test_DCH_DoesNothingOutsideLeftRightMargin
+DCHTests.test_DCH_RespectsMargins
+DECRCTests.test_SaveRestoreCursor_ResetsOriginMode
+DECSETTests.test_DECSET_DECAWM_NoLineWrapOnTabWithLeftRightMargin
+DECSETTests.test_DECSET_DECAWM_OffRespectsLeftRightMargin
+DECSETTests.test_DECSET_DECAWM_OnRespectsLeftRightMargin
+DECSETTests.test_DECSET_DECCOLM
+DECSETTests.test_DECSET_DECLRMM
+DECSETTests.test_DECSET_DECOM
+DECSETTests.test_DECSET_DECOM_DECRQCRA
+DECSETTiteInhibitTests.test_SaveRestoreCursor_ResetsOriginMode
+DLTests.test_DL_ClearOutLeftRightAndTopBottomScrollRegion
+DLTests.test_DL_InLeftRightAndTopBottomScrollRegion
+DLTests.test_DL_InLeftRightScrollRegion
+DLTests.test_DL_OutsideLeftRightScrollRegion
+FFTests.test_FF_MovesDoesNotScrollOutsideLeftRight
+HPRTests.test_HPR_IgnoresOriginMode
+HVPTests.test_HVP_RespectsOriginMode
+ICHTests.test_ICH_IsNoOpWhenCursorBeginsOutsideScrollRegion
+ICHTests.test_ICH_ScrollOffRightMarginInScrollRegion
+ILTests.test_IL_RespectsScrollRegion
+ILTests.test_IL_RespectsScrollRegion_Over
+INDTests.test_IND_MovesDoesNotScrollOutsideLeftRight
+LFTests.test_LF_MovesDoesNotScrollOutsideLeftRight
+NELTests.test_NEL_MovesDoesNotScrollOutsideLeftRight
+REPTests.test_REP_RespectsLeftRightMargins
+RITests.test_RI_MovesDoesNotScrollOutsideLeftRight
+SCORCTests.test_SaveRestoreCursor_ResetsOriginMode
+SCORCTests.test_SaveRestoreCursor_WorksInLRM
+SDTests.test_SD_BigScrollLeftRightAndTopBottomScrollRegion
+SDTests.test_SD_LeftRightAndTopBottomScrollRegion
+SDTests.test_SD_OutsideLeftRightScrollRegion
+SDTests.test_SD_RespectsLeftRightScrollRegion
+SMTests.test_SM_IRM_TruncatesAtRightMargin
+SUTests.test_SU_BigScrollLeftRightAndTopBottomScrollRegion
+SUTests.test_SU_LeftRightAndTopBottomScrollRegion
+SUTests.test_SU_OutsideLeftRightScrollRegion
+SUTests.test_SU_RespectsLeftRightScrollRegion
+VPRTests.test_VPR_IgnoresOriginMode
+VTTests.test_VT_MovesDoesNotScrollOutsideLeftRight
+
+# Insert and delete column, back and forward index (DECIC, DECDC, DECBI, DECFI)
+# are not implemented.
+DECBITests.test_DECBI_Basic
+DECBITests.test_DECBI_LeftOfMargin
+DECBITests.test_DECBI_Scrolls
+DECBITests.test_DECBI_WholeScreenScrolls
+DECDCTests.test_DECDC_CursorWithinTopBottom
+DECDCTests.test_DECDC_DefaultParam
+DECDCTests.test_DECDC_DeleteAll
+DECDCTests.test_DECDC_DeleteAllWithLeftRightMargins
+DECDCTests.test_DECDC_DeleteWithLeftRightMargins
+DECDCTests.test_DECDC_ExplicitParam
+DECFITests.test_DECFI_Basic
+DECFITests.test_DECFI_RightOfMargin
+DECFITests.test_DECFI_Scrolls
+DECFITests.test_DECFI_WholeScreenScrolls
+DECICTests.test_DECIC_CursorWithinTopBottom
+DECICTests.test_DECIC_DefaultParam
+DECICTests.test_DECIC_ExplicitParam
+DECICTests.test_DECIC_ScrollEntirelyOffRightEdge
+DECICTests.test_DECIC_ScrollOffRightEdge
+DECICTests.test_DECIC_ScrollOffRightMarginInScrollRegion
+
+# Rectangle operations (DECCRA, DECERA, DECFRA, DECSERA) are not implemented.
+DECCRATests.test_DECCRA_defaultValuesInDest
+DECCRATests.test_DECCRA_defaultValuesInSource
+DECCRATests.test_DECCRA_destinationPartiallyOffscreen
+DECCRATests.test_DECCRA_ignoresMargins
+DECCRATests.test_DECCRA_nonOverlappingSourceAndDest
+DECCRATests.test_DECCRA_overlappingSourceAndDest
+DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize
+DECCRATests.test_DECCRA_respectsOriginMode
+DECERATests.test_DECERA_basic
+DECERATests.test_DECERA_defaultArgs
+DECERATests.test_DECERA_ignoresMargins
+DECERATests.test_DECERA_overlyLargeSourceClippedToScreenSize
+DECERATests.test_DECERA_respectsOriginMode
+DECFRATests.test_DECFRA_basic
+DECFRATests.test_DECFRA_defaultArgs
+DECFRATests.test_DECFRA_ignoresMargins
+DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize
+DECFRATests.test_DECFRA_respectsOriginMode
+DECSERATests.test_DECSERA_basic
+DECSERATests.test_DECSERA_defaultArgs
+DECSERATests.test_DECSERA_doesNotRespectISOProtect
+DECSERATests.test_DECSERA_ignoresMargins
+DECSERATests.test_DECSERA_overlyLargeSourceClippedToScreenSize
+DECSERATests.test_DECSERA_respectsOriginMode
+
+# Character protection (DECSCA, SPA and EPA) and the selective erases that
+# honour it (DECSED, DECSEL) are not implemented.
+DECRQSSTests.test_DECRQSS_DECSCA
+DECSEDTests.test_DECSED_0
+DECSEDTests.test_DECSED_0_Protection
+DECSEDTests.test_DECSED_0_WithScrollRegion
+DECSEDTests.test_DECSED_0_WithScrollRegion_Protection
+DECSEDTests.test_DECSED_1
+DECSEDTests.test_DECSED_1_Protection
+DECSEDTests.test_DECSED_1_WithScrollRegion
+DECSEDTests.test_DECSED_1_WithScrollRegion_Protection
+DECSEDTests.test_DECSED_2
+DECSEDTests.test_DECSED_2_Protection
+DECSEDTests.test_DECSED_2_WithScrollRegion
+DECSEDTests.test_DECSED_2_WithScrollRegion_Protection
+DECSEDTests.test_DECSED_DECSCA_2
+DECSEDTests.test_DECSED_Default
+DECSEDTests.test_DECSED_Default_Protection
+DECSELTests.test_DECSEL_0
+DECSELTests.test_DECSEL_0_Protection
+DECSELTests.test_DECSEL_1
+DECSELTests.test_DECSEL_1_Protection
+DECSELTests.test_DECSEL_2
+DECSELTests.test_DECSEL_2_Protection
+DECSELTests.test_DECSEL_Default
+DECSELTests.test_DECSEL_Default_Protection
+DECSELTests.test_DECSEL_IgnoresScrollRegion
+DECSELTests.test_DECSEL_IgnoresScrollRegion_Protection
+DECSTRTests.test_DECSTR_DECSCA
+ECHTests.test_ECH_respectsISOProtection
+EDTests.test_ED_respectsISOProtection
+ELTests.test_EL_respectsISOProtection
+
+# Reverse wraparound (mode 45) is not implemented.
+BSTests.test_BS_AfterNoWrappedInlines
+BSTests.test_BS_AfterOneWrappedInline
+BSTests.test_BS_ReverseWrapGoesToBottom
+BSTests.test_BS_ReverseWrapStartingInDoWrapPosition
+BSTests.test_BS_WrapsInWraparoundMode
+CUBTests.test_CUB_AfterNoWrappedInlines
+CUBTests.test_CUB_AfterOneWrappedInline
+DECSETTests.test_DECSET_ReverseWraparoundLastCol_BS
+DECSETTests.test_DECSET_ReverseWraparound_BS
+DECSETTests.test_DECSET_ReverseWraparound_Multi
+
+# DECRQSS asks about a setting cooked does not have -- margins, protection, a
+# status line -- or one whose value xterm would report differently: the
+# conformance level, and a page length a program cannot change here.
+DECRQSSTests.test_DECRQSS_DECSACE
+DECRQSSTests.test_DECRQSS_DECSASD
+DECRQSSTests.test_DECRQSS_DECSCL
+DECRQSSTests.test_DECRQSS_DECSLPP
+DECRQSSTests.test_DECRQSS_DECSLRM
+DECRQSSTests.test_DECRQSS_DECSNLS
+DECRQSSTests.test_DECRQSS_DECSSDT
+
+# Device status reports for a printer, a keyboard, user-defined keys and a
+# locator are not answered: there is none of them to report on.
+DECDSRTests.test_DECDSR_DECCKSR
+DECDSRTests.test_DECDSR_DECMSR
+DECDSRTests.test_DECDSR_DSRDECLocatorStatus
+DECDSRTests.test_DECDSR_DSRDataIntegrity
+DECDSRTests.test_DECDSR_DSRKeyboard
+DECDSRTests.test_DECDSR_DSRMultipleSessionStatus
+DECDSRTests.test_DECDSR_DSRPrinterPort
+DECDSRTests.test_DECDSR_DSRUDKLocked
+DECDSRTests.test_DECDSR_LocatorType
+
+# DECRQM for a mode cooked does not have answers 0, not recognised. xterm has
+# these modes, or knows of them, and answers 2 or 4.
+DECRQMTests.test_DECRQM_ANSI_EBM
+DECRQMTests.test_DECRQM_ANSI_FEAM
+DECRQMTests.test_DECRQM_ANSI_FETM
+DECRQMTests.test_DECRQM_ANSI_GATM
+DECRQMTests.test_DECRQM_ANSI_HEM
+DECRQMTests.test_DECRQM_ANSI_KAM
+DECRQMTests.test_DECRQM_ANSI_MATM
+DECRQMTests.test_DECRQM_ANSI_PUM
+DECRQMTests.test_DECRQM_ANSI_SATM
+DECRQMTests.test_DECRQM_ANSI_SRM
+DECRQMTests.test_DECRQM_ANSI_SRTM
+DECRQMTests.test_DECRQM_ANSI_TSM
+DECRQMTests.test_DECRQM_ANSI_TTM
+DECRQMTests.test_DECRQM_ANSI_VEM
+DECRQMTests.test_DECRQM_DEC_DECBKM
+DECRQMTests.test_DECRQM_DEC_DECCOLM
+DECRQMTests.test_DECRQM_DEC_DECHCCM
+DECRQMTests.test_DECRQM_DEC_DECLRMM
+DECRQMTests.test_DECRQM_DEC_DECNRCM
+DECRQMTests.test_DECRQM_DEC_DECPEX
+DECRQMTests.test_DECRQM_DEC_DECPFF
+DECRQMTests.test_DECRQM_DEC_DECSCLM
+DECRQMTests.test_DECRQM_DEC_DECSCNM
+
+# Device attributes: cooked answers for what it is (`?62;4;22c`, `>0;0;0c`),
+# and these expect xterm's own identification.
+DA2Tests.test_DA2_0
+DA2Tests.test_DA2_NoParameter
+DATests.test_DA_0
+DATests.test_DA_NoParameter
+
+# Refused on purpose: a program does not get to recolour Emacs. Colours stay
+# as they are unless `cooked-allow-color-set' says otherwise, so a colour set
+# and read back reads as the original; palette queries (OSC 4) are not answered.
+ChangeColorTests.test_ChangeColor_CIELab
+ChangeColorTests.test_ChangeColor_CIELuv
+ChangeColorTests.test_ChangeColor_CIEXYZ
+ChangeColorTests.test_ChangeColor_CIEuvY
+ChangeColorTests.test_ChangeColor_CIExyY
+ChangeColorTests.test_ChangeColor_Hash12
+ChangeColorTests.test_ChangeColor_Hash3
+ChangeColorTests.test_ChangeColor_Hash6
+ChangeColorTests.test_ChangeColor_Hash9
+ChangeColorTests.test_ChangeColor_Multiple
+ChangeColorTests.test_ChangeColor_RGB
+ChangeColorTests.test_ChangeColor_RGBI
+ChangeColorTests.test_ChangeColor_TekHVC
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIELab
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIELuv
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIEXYZ
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIEuvY
+ChangeDynamicColorTests.test_ChangeDynamicColor_CIExyY
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash12
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash3
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash6
+ChangeDynamicColorTests.test_ChangeDynamicColor_Hash9
+ChangeDynamicColorTests.test_ChangeDynamicColor_Multiple
+ChangeDynamicColorTests.test_ChangeDynamicColor_RGB
+ChangeDynamicColorTests.test_ChangeDynamicColor_RGBI
+ChangeDynamicColorTests.test_ChangeDynamicColor_TekHVC
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIELab
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIELuv
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIEXYZ
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIEuvY
+ChangeSpecialColorTests.test_ChangeSpecialColor_CIExyY
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash12
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash3
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash6
+ChangeSpecialColorTests.test_ChangeSpecialColor_Hash9
+ChangeSpecialColorTests.test_ChangeSpecialColor_Multiple
+ChangeSpecialColorTests.test_ChangeSpecialColor_Multiple2
+ChangeSpecialColorTests.test_ChangeSpecialColor_RGB
+ChangeSpecialColorTests.test_ChangeSpecialColor_RGBI
+ChangeSpecialColorTests.test_ChangeSpecialColor_TekHVC
+ResetColorTests.test_ResetColor_All
+ResetColorTests.test_ResetColor_Standard
+ResetSpecialColorTests.test_ResetSpecialColor_Dynamic
+ResetSpecialColorTests.test_ResetSpecialColor_Multiple
+ResetSpecialColorTests.test_ResetSpecialColor_Multiple2
+ResetSpecialColorTests.test_ResetSpecialColor_Single
+ResetSpecialColorTests.test_ResetSpecialColor_Single2
+
+# Refused on purpose: the window is Emacs'. Moving, resizing, iconifying and
+# maximising it are ignored, and the title is not reported back as input.
+XtermWinopsTests.test_XtermWinops_DECSLPP
+XtermWinopsTests.test_XtermWinops_Fullscreen
+XtermWinopsTests.test_XtermWinops_IconifyDeiconfiy
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_Horizontally
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_HorizontallyAndVertically
+XtermWinopsTests.test_XtermWinops_MaximizeWindow_Vertically
+XtermWinopsTests.test_XtermWinops_MoveToXY
+XtermWinopsTests.test_XtermWinops_MoveToXY_Defaults
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopIcon
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopIconAndWindow
+XtermWinopsTests.test_XtermWinops_PushIconAndWindow_PopWindow
+XtermWinopsTests.test_XtermWinops_PushIconThenWindowThenPopBoth
+XtermWinopsTests.test_XtermWinops_PushIcon_PopIcon
+XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Icon
+XtermWinopsTests.test_XtermWinops_PushMultiplePopMultiple_Window
+XtermWinopsTests.test_XtermWinops_PushWindow_PopWindow
+XtermWinopsTests.test_XtermWinops_ReportIconLabel
+XtermWinopsTests.test_XtermWinops_ReportWindowLabel
+XtermWinopsTests.test_XtermWinops_ResizeChars_BothParameters
+XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultHeight
+XtermWinopsTests.test_XtermWinops_ResizeChars_DefaultWidth
+XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroHeight
+XtermWinopsTests.test_XtermWinops_ResizeChars_ZeroWidth
+XtermWinopsTests.test_XtermWinops_ResizePixels_BothParameters
+XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedHeight
+XtermWinopsTests.test_XtermWinops_ResizePixels_OmittedWidth
+XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroHeight
+XtermWinopsTests.test_XtermWinops_ResizePixels_ZeroWidth
+
+# Modes 47 and 1047 clear the alternate screen and home the cursor on the way
+# in, as 1049 does. xterm keeps both.
+DECSETTests.test_DECSET_ALTBUF
+DECSETTests.test_DECSET_OPT_ALTBUF
+
+# Saving and restoring private modes (`CSI ? Ps s`, `CSI ? Ps r`) is not
+# implemented.
+XtermSaveTests.test_XtermSave_SaveResetState
+XtermSaveTests.test_XtermSave_SaveSetState
+
+# xterm's own: the 80/132 column switch (modes 3 and 40), the `more' fix (mode
+# 41), conformance levels that turn features off (DECSCL), and reporting the
+# title mode.
+DECSCLTests.test_DECSCL_Level2DoesntSupportDECRQM
+DECSCLTests.test_DECSCL_Level4_SupportsDECSLRMDoesntSupportDECNCSM
+DECSETTests.test_DECSET_Allow80To132
+DECSETTests.test_DECSET_MoreFix
+RISTests.test_RIS_ResetDECCOLM
+RISTests.test_RIS_ResetTitleMode

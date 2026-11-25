@@ -4,11 +4,61 @@ All notable changes to this fork of [cooked](https://github.com/vodik/cooked) ar
 documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Nothing has been released yet, so everything is under Unreleased.
+
+The fork left upstream at `dd8e9fc` (2026-09-06), which is upstream's 1.0.0. Fork
+versions are numbered from there as `1.0.0+fork.N`: upstream's version, and the count
+of the fork's own. They are not tagged or published; each one names the commits it
+covers, newest first.
 
 ## [Unreleased]
 
-Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
+### Added
+
+- `tests/torture.rs`: generated hostile and nonsensical terminal output, by the
+  thousand. It checks that nothing a program prints panics the emulator, at any
+  size down to 1x1 with resizes and drains in between, and that where a read from
+  the pty happens to end does not change the screen. Each case is a seed that can
+  be replayed and shrunk.
+- `cooked-checksum-reports`, off by default: answer DECRQCRA, the checksum of a
+  rectangle of the screen. Conformance suites read the screen back with it.
+- `make conformance ESCTEST=/path/to/esctest2` runs the esctest suite, each
+  test as the child of a real session of its own, and compares the result with
+  `tests/conformance/esctest-expected-failures.txt`.
+- DECRQSS (`DCS $ q`), the query for a setting: the rendition, the cursor style
+  and the scrolling region are reported as the sequence that would set them,
+  and a setting cooked does not have is answered as unknown instead of not at
+  all.
+- DECALN (`ESC # 8`), the screen alignment pattern; DECXCPR (`CSI ? 6 n`), the
+  cursor report with the private marker; and DECID (`ESC Z`), answered as
+  device attributes are.
+
+### Fixed
+
+- A character was lost when the one before it arrived in two reads. A two-byte
+  character cut by the end of a read, followed by one ASCII character and then
+  another multi-byte one, as in `é à`, took the ASCII character with it. The
+  parser inherited this from `vte`.
+- A C1 control (`U+0080` to `U+009F`) cut in half by a read was printed as an
+  invisible character on the cell to its left instead of being read as a control.
+- Origin mode was only half there. The cursor report (`CSI 6 n`) gave the
+  screen row where a program expects the row counted from the top margin, VPA
+  ignored the mode, setting it homed to the top of the screen instead of the
+  top margin, and an addressed row could leave the scrolling region.
+- Restoring a cursor that was never saved (`ESC 8`, `CSI u`) did nothing. It
+  goes home with the default rendition, as after a soft reset, which empties
+  the save.
+- Two tests that failed for reasons of their own. `shutdown_returns_promptly`
+  allowed 150 ms, which is the grace shutdown gives a child before killing it,
+  and failed whenever that grace was used. The evil test for output clearing a
+  selection still expected any output to clear it, and passes again now that
+  its child overwrites the selected text; it had gone unseen because the evil
+  tests skip when evil is not on the load path.
+
+## [1.0.0+fork.4] - 2026-11-24
+
+Commits `6b96d77` to `e4dc3b2`.
+
+Public names for what other packages build on.
 
 ### Added
 
@@ -17,33 +67,25 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   `cooked-runs-directory` and `cooked-popup-frame`. The private names they
   replace (`cooked-host--program`, `cooked-host--directory`,
   `cooked-host--session`, `cooked-run--directory`) remain as obsolete aliases.
-- `cooked-exec` runs a program other than a shell, such as tmux, as the
-  terminal's child. `cooked-keymap-exceptions` keeps keys such as `C-x`, `M-x`
-  and `M-:` with Emacs. Graphical control chords, Shift-Tab and yank are
-  forwarded, and the tty character is sent for job control.
-- `cooked-host`: sessions that outlive Emacs. Each session can run under a small
-  host program of its own, which keeps the recent output and replays it on
-  attach, so scrollback, prompt marks, links and images come back. Commands
-  `cooked-host-shell`, `cooked-host-exec`, `cooked-host-attach`,
-  `cooked-host-detach`, `cooked-host-kill` and `cooked-host-restore`; hosted
-  buffers are restored by `desktop-save-mode` and `persp-mode`. The binary also
-  works from scripts (`new`, `list`, `capture`, `send`, `kill`) and is built by
-  `make host`.
-- Navigation of a running program's output as Emacs text (`cooked-navigate`).
-  A program that reads every key but prints onto the main screen, such as an
-  agent's chat or a REPL, can be read with motion, isearch, the region and
-  `M-w` while it keeps running. It applies from terminal state alone and turns
-  off when the program takes the alternate screen or the mouse. See
-  `cooked-navigation-keys` and `cooked-navigable-programs`.
-- Shell-prompt keys at a navigable program's input: `C-p`/`C-n` move, `M-p`/`M-n`
-  recall the program's history, `C-s`/`C-r` start isearch over the output, and
-  `C-y` pastes the kill ring. The program's own bindings stay reachable with
-  `C-c C-q`.
-- A dock for a program's input (`cooked-dock`). Scrolling a navigable
-  program's window away from the bottom splits its live rows into a window
-  underneath, so a reply can be typed while the history is read. Scrolling back
-  down, moving onto the live rows or submitting with `RET` joins them again.
-  See `cooked-dock`, `cooked-dock-context-rows` and `cooked-dock-max-fraction`.
+
+### Fixed
+
+- A saved session is restored from a buffer whose directory is gone.  The host
+  program was run in the current buffer's directory, and where that had been
+  removed or renamed no process started: `cooked-host-restore` and the
+  `persp-mode` and `desktop` handlers then brought nothing back, and said
+  nothing.  It is now run where a directory surely is; it is told every
+  directory it needs.
+
+## [1.0.0+fork.3] - 2026-11-22
+
+Commits `be5e7da` to `6d886bb`.
+
+Emacs edits the line a program reads (`cooked-program-line-editor`), and the fixes
+that followed from using it.
+
+### Added
+
 - `cooked-program-line-editor`: set to `emacs` to edit a navigable program's
   input line with Emacs commands (motion, the mark and region, kill and yank,
   `M-p` history, `S-RET` for a newline). The first character typed into an
@@ -63,50 +105,6 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   (`cooked-program-line-shells`); a shell's line is `cooked-shell-line-editor`'s. Off by default.
 - `cooked-drain-functions`, run once each drain is applied, for packages that
   wait on the child's answer to something they sent.
-- A hosted program is told its session's name in `COOKED_HOST_SESSION` and
-  where the host program is in `COOKED_HOST`, and `cooked-host-attach-hook`
-  runs in a buffer attached to a session.
-- Runs: `cooked-host run -- COMMAND` runs a command of a program in a hosted
-  session unchanged and also keeps what it prints, as it comes, under the
-  session's name. `cooked-run` follows one from Emacs in a buffer that grows
-  with it (`cooked-run-latest`, `cooked-run-select`, `cooked-runs`,
-  `cooked-run-buffer`).
-- `cooked-popup`: a look at a buffer or a file in a child frame over the current
-  one, without touching the windows underneath. `cooked-popup-file` shows a file
-  read-only in its own major mode, without running mode hooks or reading local
-  variables; `cooked-popup-open-file` does so for file names in a terminal's
-  output, as a `cooked-file-open-function`. `cooked-popup-buffer` shows a
-  package's own buffer, with `cooked-popup-mode` for its keys (`q` close, `l`
-  back, `v` open in a window). The frame is one size whatever it shows, so
-  stepping between buffers neither moves nor resizes it (`cooked-popup-top`,
-  `cooked-popup-bottom`).
-- `cooked-close` (`C-c C-k`) hangs up on the program, ends the session and
-  closes the buffer; `cooked-close-grace` sets how long it waits.
-- `cooked-annotate`: packages can attach clickable notes to stretches of
-  output, marked in the fringe. `cooked-annotation-next` and
-  `cooked-annotation-previous` step between them.
-- Seams for other packages: `cooked-prompt-positions-functions` adds stops for
-  `C-c C-p`/`C-c C-n`, `cooked-paste-string` pastes text at the program's
-  input, and the buffer-local `cooked-file-open-function` decides how files
-  named in the output are opened.
-- Dropping files onto a cooked buffer types their shell-quoted paths at the
-  input, as a terminal does (`cooked-dnd-insert-file-names`).
-- `cooked-shell-line-editor`: set to `shell` to leave every command line with
-  the shell's own line editor, so zsh plugins such as autosuggestions, syntax
-  highlighting and fzf widgets work.
-- `cooked-copy-unwrap`: copied text has a program's own hard wrapping and
-  continuation indents removed, leaving tables, box drawing and code alone.
-- Program variables in the mode line: a program can name things about itself,
-  such as the model an agent is running, with iTerm2's `SetUserVar` escape
-  (`OSC 1337`). The names in `cooked-mode-line-user-vars` are shown while the
-  program that set them is in the foreground.
-- `cooked-defer-resize-on-main-screen` (on by default): while a program owns
-  the keyboard on the main screen, a shrink in height is held back so an inline
-  renderer does not leave copies of its frame in the scrollback.
-- `cooked-resize-settle-delay` (0.5 s): a new width is passed to the program
-  only once it has held, so a split made and undone never reaches it.
-- `cooked-mode-line-strip-title-symbols` and `cooked-mode-line-states` keep
-  the mode line quiet.
 - A failed redisplay names the functions the error came out of, and
   `cooked-show-last-failure` shows its backtrace (Emacs 30 and later).
 
@@ -117,30 +115,6 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   for every visible terminal.
 - A soft-wrapped line no longer has a continuation arrow in the fringe. A
   truncated row keeps its truncation arrow.
-- Output floods are several times faster. Scrollback that `cooked-scrollback-lines`
-  would trim the moment it arrived is dropped in the native core instead of being sent
-  to Emacs, and the child is no longer held back for scrollback while a cap is set.
-  The styling of a long batch of scrollback is applied when it is displayed rather
-  than when it arrives. 100,000 coloured lines took 1.8 s of Emacs time; they now
-  take under 0.2 s.
-- Rust 1.100 or later is required.
-- A first build of the native core in a fresh install deletes cargo's build tree
-  once the library is installed; a checkout that already has one keeps it.
-- `cooked-kill-buffer-on-exit` defaults to `on-success`: a clean exit closes the
-  buffer, while a failure keeps its output on screen.
-- The mode line shows the keyboard-state word only for `alt` and `secret`;
-  set `cooked-mode-line-states` to `t` for all of them. Symbols a program puts
-  in front of its title, such as a spinner, are no longer shown.
-- Program names come from `argv[0]` rather than the kernel's process name.
-- Writes to the child never block Emacs.
-- Box-drawing runs are drawn as one image per run rather than one per cell,
-  and fallback-font glyphs are fitted to their cell so rows keep their height.
-- Opening the minibuffer no longer resizes the terminal.
-- The shipped terminfo database advertises extended keys, bracketed paste,
-  focus events and hyperlinks, is readable by macOS's system ncurses, and is
-  rebuilt locally when it is not usable.
-- A no-break space is drawn as a plain space rather than with Emacs'
-  `nobreak-space` underline.
 - `C-e` and `C-k` at a prompt stop at the end of the line being typed when the
   row goes on past it (a right-hand prompt, or what a program drew after its
   cursor). A second `C-e` goes on to the end of the row, as a second `C-a`
@@ -148,13 +122,6 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   row below it.
 
 ### Fixed
-
-- A saved session is restored from a buffer whose directory is gone.  The host
-  program was run in the current buffer's directory, and where that had been
-  removed or renamed no process started: `cooked-host-restore` and the
-  `persp-mode` and `desktop` handlers then brought nothing back, and said
-  nothing.  It is now run where a directory surely is; it is told every
-  directory it needs.
 
 - A long line typed to a program with `cooked-program-line-editor` at `emacs`
   pushed the rows under it, the rest of the program's input box and its status
@@ -247,6 +214,147 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   submitted as the end of the message. They are held, and start the next line.
 - Output arriving while a line was edited mid-way moved point to the end of the
   line; it stays where it was.
+- A drain failing with "Invalid search bound" while fitting wide glyphs to their
+  cells, when point was left on a row above the one just written.
+- A screenful of output kept twice in the scrollback when a row of block
+  glyphs, such as a program's logo, arrived while another buffer's window was
+  selected.
+
+## [1.0.0+fork.2] - 2026-11-15
+
+Commits `0ed4895` to `6c3e78b`.
+
+Cheap output floods, and runs and pop-ups for what a hosted program does out of sight.
+
+### Added
+
+- A hosted program is told its session's name in `COOKED_HOST_SESSION` and
+  where the host program is in `COOKED_HOST`, and `cooked-host-attach-hook`
+  runs in a buffer attached to a session.
+- Runs: `cooked-host run -- COMMAND` runs a command of a program in a hosted
+  session unchanged and also keeps what it prints, as it comes, under the
+  session's name. `cooked-run` follows one from Emacs in a buffer that grows
+  with it (`cooked-run-latest`, `cooked-run-select`, `cooked-runs`,
+  `cooked-run-buffer`).
+- `cooked-popup`: a look at a buffer or a file in a child frame over the current
+  one, without touching the windows underneath. `cooked-popup-file` shows a file
+  read-only in its own major mode, without running mode hooks or reading local
+  variables; `cooked-popup-open-file` does so for file names in a terminal's
+  output, as a `cooked-file-open-function`. `cooked-popup-buffer` shows a
+  package's own buffer, with `cooked-popup-mode` for its keys (`q` close, `l`
+  back, `v` open in a window). The frame is one size whatever it shows, so
+  stepping between buffers neither moves nor resizes it (`cooked-popup-top`,
+  `cooked-popup-bottom`).
+
+### Changed
+
+- Output floods are several times faster. Scrollback that `cooked-scrollback-lines`
+  would trim the moment it arrived is dropped in the native core instead of being sent
+  to Emacs, and the child is no longer held back for scrollback while a cap is set.
+  The styling of a long batch of scrollback is applied when it is displayed rather
+  than when it arrives. 100,000 coloured lines took 1.8 s of Emacs time; they now
+  take under 0.2 s.
+- Rust 1.100 or later is required.
+- A first build of the native core in a fresh install deletes cargo's build tree
+  once the library is installed; a checkout that already has one keeps it.
+
+### Fixed
+
+- The checkout not being found, and so the native module, terminfo and shell
+  integration not being found, when cooked is installed by straight or elpaca and
+  loaded compiled.
+- A hosted session started from a buffer with an environment of its own, as
+  envrc gives one in a direnv project, getting Emacs's global environment
+  instead: without the project's variables or the terminal's own settings.
+- The keymap not being refreshed, and an error logged, when a cooked buffer was
+  selected in another frame: the selection hook took the window it is handed
+  for a frame.
+
+## [1.0.0+fork.1] - 2026-11-15
+
+Commits `a5f4702` to `077d8c4`.
+
+The port from upstream: hardening against hostile output, programs other than a shell
+as the terminal's child, sessions that outlive Emacs, reading a running program's
+output as Emacs text, docks and annotations.
+
+### Added
+
+- `cooked-exec` runs a program other than a shell, such as tmux, as the
+  terminal's child. `cooked-keymap-exceptions` keeps keys such as `C-x`, `M-x`
+  and `M-:` with Emacs. Graphical control chords, Shift-Tab and yank are
+  forwarded, and the tty character is sent for job control.
+- `cooked-host`: sessions that outlive Emacs. Each session can run under a small
+  host program of its own, which keeps the recent output and replays it on
+  attach, so scrollback, prompt marks, links and images come back. Commands
+  `cooked-host-shell`, `cooked-host-exec`, `cooked-host-attach`,
+  `cooked-host-detach`, `cooked-host-kill` and `cooked-host-restore`; hosted
+  buffers are restored by `desktop-save-mode` and `persp-mode`. The binary also
+  works from scripts (`new`, `list`, `capture`, `send`, `kill`) and is built by
+  `make host`.
+- Navigation of a running program's output as Emacs text (`cooked-navigate`).
+  A program that reads every key but prints onto the main screen, such as an
+  agent's chat or a REPL, can be read with motion, isearch, the region and
+  `M-w` while it keeps running. It applies from terminal state alone and turns
+  off when the program takes the alternate screen or the mouse. See
+  `cooked-navigation-keys` and `cooked-navigable-programs`.
+- Shell-prompt keys at a navigable program's input: `C-p`/`C-n` move, `M-p`/`M-n`
+  recall the program's history, `C-s`/`C-r` start isearch over the output, and
+  `C-y` pastes the kill ring. The program's own bindings stay reachable with
+  `C-c C-q`.
+- A dock for a program's input (`cooked-dock`). Scrolling a navigable
+  program's window away from the bottom splits its live rows into a window
+  underneath, so a reply can be typed while the history is read. Scrolling back
+  down, moving onto the live rows or submitting with `RET` joins them again.
+  See `cooked-dock`, `cooked-dock-context-rows` and `cooked-dock-max-fraction`.
+- `cooked-close` (`C-c C-k`) hangs up on the program, ends the session and
+  closes the buffer; `cooked-close-grace` sets how long it waits.
+- `cooked-annotate`: packages can attach clickable notes to stretches of
+  output, marked in the fringe. `cooked-annotation-next` and
+  `cooked-annotation-previous` step between them.
+- Seams for other packages: `cooked-prompt-positions-functions` adds stops for
+  `C-c C-p`/`C-c C-n`, `cooked-paste-string` pastes text at the program's
+  input, and the buffer-local `cooked-file-open-function` decides how files
+  named in the output are opened.
+- Dropping files onto a cooked buffer types their shell-quoted paths at the
+  input, as a terminal does (`cooked-dnd-insert-file-names`).
+- `cooked-shell-line-editor`: set to `shell` to leave every command line with
+  the shell's own line editor, so zsh plugins such as autosuggestions, syntax
+  highlighting and fzf widgets work.
+- `cooked-copy-unwrap`: copied text has a program's own hard wrapping and
+  continuation indents removed, leaving tables, box drawing and code alone.
+- Program variables in the mode line: a program can name things about itself,
+  such as the model an agent is running, with iTerm2's `SetUserVar` escape
+  (`OSC 1337`). The names in `cooked-mode-line-user-vars` are shown while the
+  program that set them is in the foreground.
+- `cooked-defer-resize-on-main-screen` (on by default): while a program owns
+  the keyboard on the main screen, a shrink in height is held back so an inline
+  renderer does not leave copies of its frame in the scrollback.
+- `cooked-resize-settle-delay` (0.5 s): a new width is passed to the program
+  only once it has held, so a split made and undone never reaches it.
+- `cooked-mode-line-strip-title-symbols` and `cooked-mode-line-states` keep
+  the mode line quiet.
+
+### Changed
+
+- `cooked-kill-buffer-on-exit` defaults to `on-success`: a clean exit closes the
+  buffer, while a failure keeps its output on screen.
+- The mode line shows the keyboard-state word only for `alt` and `secret`;
+  set `cooked-mode-line-states` to `t` for all of them. Symbols a program puts
+  in front of its title, such as a spinner, are no longer shown.
+- Program names come from `argv[0]` rather than the kernel's process name.
+- Writes to the child never block Emacs.
+- Box-drawing runs are drawn as one image per run rather than one per cell,
+  and fallback-font glyphs are fitted to their cell so rows keep their height.
+- Opening the minibuffer no longer resizes the terminal.
+- The shipped terminfo database advertises extended keys, bracketed paste,
+  focus events and hyperlinks, is readable by macOS's system ncurses, and is
+  rebuilt locally when it is not usable.
+- A no-break space is drawn as a plain space rather than with Emacs'
+  `nobreak-space` underline.
+
+### Fixed
+
 - Truecolor sequences swallowing the parameter after them.
 - DECSC/DECRC not saving and restoring the pen.
 - RIS leaving the alternate screen up.
@@ -274,20 +382,6 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 - Emacs aborting on macOS when a file was dragged over a cooked buffer.
 - Scrolling other buffers hitching beside a terminal window scrolled up into a
   long history.
-- The checkout not being found, and so the native module, terminfo and shell
-  integration not being found, when cooked is installed by straight or elpaca and
-  loaded compiled.
-- A hosted session started from a buffer with an environment of its own, as
-  envrc gives one in a direnv project, getting Emacs's global environment
-  instead: without the project's variables or the terminal's own settings.
-- The keymap not being refreshed, and an error logged, when a cooked buffer was
-  selected in another frame: the selection hook took the window it is handed
-  for a frame.
-- A drain failing with "Invalid search bound" while fitting wide glyphs to their
-  cells, when point was left on a row above the one just written.
-- A screenful of output kept twice in the scrollback when a row of block
-  glyphs, such as a program's logo, arrived while another buffer's window was
-  selected.
 
 ### Security
 
@@ -302,4 +396,8 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
   control and bidirectional-override characters removed.
 - Only an `OSC 1337` inline image may exceed the OSC payload limit.
 
-[Unreleased]: https://github.com/dangom/cooked/compare/dd8e9fc...HEAD
+[Unreleased]: https://github.com/dangom/cooked/compare/e4dc3b2...HEAD
+[1.0.0+fork.4]: https://github.com/dangom/cooked/compare/6d886bb...e4dc3b2
+[1.0.0+fork.3]: https://github.com/dangom/cooked/compare/6c3e78b...6d886bb
+[1.0.0+fork.2]: https://github.com/dangom/cooked/compare/077d8c4...6c3e78b
+[1.0.0+fork.1]: https://github.com/dangom/cooked/compare/dd8e9fc...077d8c4

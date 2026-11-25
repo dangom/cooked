@@ -982,6 +982,29 @@ so a terminal that never answers costs them their whole timeout on startup."
                    (cooked-tests--contents out))))
       (delete-file out))))
 
+(ert-deftest cooked-checksum-reports-answers-only-when-asked-to ()
+  "DECRQCRA reads the screen back to the child, so a session answers it only
+with `cooked-checksum-reports' on."
+  (let ((out (make-temp-file "cooked-decrqcra")))
+    (unwind-protect
+        (progn
+          (let ((cooked-checksum-reports t))
+            (cooked-tests--with-session
+                (cooked-tests--reply-to "ab\\033[7;0;1;2;1;2*y" out)
+              (should (cooked-tests--settle
+                       (lambda () (string-match-p "!~" (cooked-tests--contents out)))))
+              ;; One cell, row 1 column 2: the checksum is the `b' in it.
+              (should (equal (cooked-tests--contents out) "\033P7!~0062\033\\"))))
+          (with-temp-file out)
+          ;; Off, the query is followed by one that is always answered, so that
+          ;; silence is seen rather than waited for.
+          (cooked-tests--with-session
+              (cooked-tests--reply-to "ab\\033[7;0;1;2;1;2*y\\033[5n" out)
+            (should (cooked-tests--settle
+                     (lambda () (string-match-p "0n" (cooked-tests--contents out)))))
+            (should (equal (cooked-tests--contents out) "\033[0n"))))
+      (delete-file out))))
+
 (ert-deftest cooked-osc-color-reply-echoes-the-terminator-it-was-asked-with ()
   "A client that queried with ST does not recognise a BEL-terminated answer."
   (let ((out (make-temp-file "cooked-osc10")))

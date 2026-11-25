@@ -37,7 +37,7 @@ HOST := target/release/cooked-host
 # evil says so and skips, which is quiet enough to be mistaken for passing.
 EVIL_LOAD_PATH ?=
 
-.PHONY: all test rust-test lisp-test lint checkdoc compile bench clean module host terminfo
+.PHONY: all test rust-test lisp-test lint checkdoc compile bench conformance clean module host terminfo
 
 all: test
 
@@ -124,6 +124,15 @@ checkdoc:
 	                         sentence-end-double-space t) \
 	                   (checkdoc-file \"$$f\"))" 2>&1; \
 	done | grep -v '^Warning (emacs): $$' || true
+
+# esctest, run as a child of a real session; see tests/conformance/esctest.el.
+# Not part of `test': the suite is somebody else's and is not vendored, so the
+# checkout is named on the command line -- `make conformance ESCTEST=~/src/esctest2'.
+# ESCTEST_INCLUDE narrows it to the tests a regexp names.
+ESCTEST ?=
+conformance: module
+	@test -n "$(ESCTEST)" || { echo "usage: make conformance ESCTEST=/path/to/esctest2"; exit 2; }
+	ESCTEST="$(ESCTEST)" $(BATCH) -l tests/conformance/esctest.el -f cooked-esctest
 
 bench:
 	cargo test --release --test throughput -- --ignored --nocapture

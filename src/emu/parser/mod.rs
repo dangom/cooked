@@ -784,7 +784,7 @@ impl Parser {
             // If the entire buffer is valid, use the first character and continue parsing.
             Ok(parsed) => {
                 let c = unsafe { parsed.chars().next().unwrap_unchecked() };
-                performer.print(c);
+                Self::dispatch_completed(performer, c);
 
                 self.partial_utf8_len = 0;
                 c.len_utf8() - old_bytes
@@ -794,16 +794,24 @@ impl Parser {
                 // If we have any valid bytes, that means we partially copied another
                 // utf8 character into `partial_utf8`. Since we only care about the
                 // first character, we just ignore the rest.
+                //
+                // "The rest" is not always that one partial character, which is what
+                // upstream assumed when it consumed `valid_bytes` here: the valid prefix
+                // can hold whole characters after the first. `é` cut in two, then a
+                // space, then another accented letter fills the buffer with `c3 a9 20
+                // c3`, valid for three bytes, and consuming three took the space with it
+                // -- unprinted, since only the first character is. So consume the first
+                // character and no more; whatever follows is parsed again from ground.
                 if valid_bytes > 0 {
                     let c = unsafe {
                         let parsed = str::from_utf8_unchecked(&self.partial_utf8[..valid_bytes]);
                         parsed.chars().next().unwrap_unchecked()
                     };
 
-                    performer.print(c);
+                    Self::dispatch_completed(performer, c);
 
                     self.partial_utf8_len = 0;
-                    return valid_bytes - old_bytes;
+                    return c.len_utf8() - old_bytes;
                 }
 
                 match err.error_len() {
@@ -819,6 +827,23 @@ impl Parser {
                     None => to_copy,
                 }
             }
+        }
+    }
+
+    /// Dispatch a character that arrived in two reads, as [`Self::ground_dispatch`]
+    /// would have dispatched it had it arrived in one.
+    ///
+    /// Upstream prints it unconditionally, which is right for everything except the C1
+    /// controls: `U+0080..=U+009F` are two bytes each in UTF-8, so one can be cut in
+    /// half by a read, and it is a control on whichever side of a read it falls. Printed,
+    /// it is a zero-width character folded onto the cell to its left -- invisible, and
+    /// in the buffer text for good.
+    #[inline]
+    fn dispatch_completed<P: Perform>(performer: &mut P, c: char) {
+        if matches!(c, '\u{80}'..='\u{9f}') {
+            performer.execute(c as u8);
+        } else {
+            performer.print(c);
         }
     }
 
@@ -1580,6 +1605,70 @@ mod tests {
         assert_eq!(dispatcher.dispatched.len(), 2);
         assert_eq!(dispatcher.dispatched[0], Sequence::Print('ĸ'));
         assert_eq!(dispatcher.dispatched[1], Sequence::Print('🎉'));
+    }
+
+    #[test]
+    fn partial_utf8_keeps_what_follows_the_completed_character() {
+        // "é à", read as the first byte of the `é` and then the rest. The four bytes
+        // gathered to complete it are `c3 a9 20 c3`: a whole `é`, a whole space, and
+        // the start of the `à`. The space used to be consumed along with the `é` and
+        // never printed.
+        const INPUT: &[u8] = b"\xC3\xA9 \xC3\xA0";
+
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, &INPUT[..1]);
+        parser.advance(&mut dispatcher, &INPUT[1..]);
+
+        assert_eq!(
+            dispatcher.dispatched,
+            [
+                Sequence::Print('é'),
+                Sequence::Print(' '),
+                Sequence::Print('à')
+            ]
+        );
+    }
+
+    #[test]
+    fn partial_utf8_keeps_what_follows_before_an_invalid_byte() {
+        // The same shape with a byte that is not UTF-8 at all in fourth place.
+        const INPUT: &[u8] = b"\xC3\xA9a\xFFb";
+
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, &INPUT[..1]);
+        parser.advance(&mut dispatcher, &INPUT[1..]);
+
+        assert_eq!(
+            dispatcher.dispatched,
+            [
+                Sequence::Print('é'),
+                Sequence::Print('a'),
+                Sequence::Print('�'),
+                Sequence::Print('b')
+            ]
+        );
+    }
+
+    #[test]
+    fn a_c1_control_is_a_control_on_either_side_of_a_read() {
+        // U+0088, which is `c2 88`, whole and then cut in half.
+        const INPUT: &[u8] = b"Y\xC2\x88";
+
+        let mut whole = Dispatcher::default();
+        Parser::new().advance(&mut whole, INPUT);
+
+        let mut split = Dispatcher::default();
+        let mut parser = Parser::new();
+        parser.advance(&mut split, &INPUT[..2]);
+        parser.advance(&mut split, &INPUT[2..]);
+
+        let expected = [Sequence::Print('Y'), Sequence::Execute(0x88)];
+        assert_eq!(whole.dispatched, expected);
+        assert_eq!(split.dispatched, expected);
     }
 
     #[test]

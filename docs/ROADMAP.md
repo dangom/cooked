@@ -263,8 +263,16 @@ Things that are missing rather than ideas:
   ours to assert, `$status` inside `fish_postexec` included. What fish has no equivalent of is the `OSC 51;CH`
   announcement, so a fish at the far end of an `ssh` keeps its own line editor where
   zsh and bash would not.
-- **`vttest`-level conformance.** vim, htop, tmux and less work; the long tail of escape
-  sequences is untested.
+- **Conformance is measured, and what is missing is listed.** `make conformance` runs
+  esctest, the suite iTerm2 and xterm are tested with, and
+  `tests/conformance/esctest-expected-failures.txt` names every test of it that fails,
+  grouped by why. Of 567, 45 are ones esctest itself skips or knows to fail and the
+  list holds 268. About a third of those are refusals rather than gaps: recolouring
+  Emacs, and moving, resizing or reading back the window. The rest are VT420 features
+  nothing here has needed -- left and right margins and the column operations that go
+  with them, rectangle operations, character protection, reverse wraparound -- and
+  queries about hardware there is none of. `vttest` itself,
+  which is interactive and judged by eye, has not been run.
 - **powerlevel10k's instant prompt** renders before `.zshrc` finishes, so the first prompt
   of a session can miss its OSC 133 marks. Every prompt after it is fine, because the mark
   is re-appended from a precmd hook that keeps itself last.

@@ -180,7 +180,10 @@ impl Perform for State {
             (None, b'=') => self.modes.app_keypad = true,
             (None, b'>') => self.modes.app_keypad = false,
             (None, b'7') => self.save_restore(true),
-            (None, b'8') => self.save_restore(false),
+            (None, b'8') => self.restore_cursor(),
+            (Some(b'#'), b'8') => self.alignment_pattern(),
+            // DECID, the identify request older than DA and answered as DA is.
+            (None, b'Z') => self.csi_reply(format_args!("{}", csi::PRIMARY_DA)),
             (None, b'c') => {
                 // RIS is a soft reset that also clears the screen. The pen is default by
                 // the time the erase runs, so this is `bce` with nothing to carry.

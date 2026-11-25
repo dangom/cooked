@@ -26,6 +26,10 @@ pub(super) enum CursorAfterImage {
     PastRightEdge,
 }
 
+/// The longest DECRQSS name kept: two bytes is the longest there is, and a third is
+/// what makes an over-long one compare unequal to every real name.
+const STATUS_REQUEST_LIMIT: usize = 3;
+
 impl State {
     pub(super) fn place_image(
         &mut self,
@@ -251,9 +255,10 @@ impl State {
         }
     }
 
-    /// `ESC P ... q` — the start of a sixel image, and nothing else so far.
+    /// `ESC P ... q` — the start of a sixel image, or with `$` before the `q` a
+    /// DECRQSS status request; see [`State::report_setting`].
     ///
-    /// Every other DCS is let through untouched: DECRQSS, DECRSPS and the rest are not
+    /// Every other DCS is let through untouched: DECRSPS and the rest are not
     /// implemented, and collecting a payload we would only discard is worse than not
     /// collecting it. `ignore` is the parser saying the introducer was malformed.
     pub(super) fn dcs_hook(&mut self, intermediates: &[u8], ignore: bool, action: char) {
@@ -265,6 +270,7 @@ impl State {
         // three survives the trip: the picture is scaled to a cell rectangle, and what
         // "background" means here is Emacs' buffer face, which alpha already defers to.
         self.sixel = (action == 'q' && intermediates.is_empty() && !ignore).then(Vec::new);
+        self.status_request = (action == 'q' && intermediates == b"$" && !ignore).then(Vec::new);
     }
 
     /// A slice of the running DCS string's payload.
@@ -272,6 +278,12 @@ impl State {
     /// Slices rather than a call per byte is the vendored parser's doing, and it is what
     /// makes collecting a megabyte of sixel a handful of appends.
     pub(super) fn dcs_put(&mut self, bytes: &[u8]) {
+        if let Some(name) = &mut self.status_request {
+            // Longer than any setting's name is not a name; one byte past the longest
+            // is kept so that it reads as unknown rather than as its own prefix.
+            let room = STATUS_REQUEST_LIMIT - name.len().min(STATUS_REQUEST_LIMIT);
+            name.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        }
         if let Some(body) = &mut self.sixel {
             // Truncated rather than dropped, unlike an over-long APC: a sixel body is a
             // sequence of independent bands, so its prefix is a shorter picture and not
@@ -283,6 +295,10 @@ impl State {
 
     /// The DCS string ended: decode what was collected, if it was a sixel.
     pub(super) fn dcs_unhook(&mut self) {
+        if let Some(name) = self.status_request.take() {
+            self.report_setting(&name);
+            return;
+        }
         let Some(body) = self.sixel.take() else {
             return;
         };
@@ -296,6 +312,95 @@ impl State {
         let (format, bytes) = bitmap.encode();
         let id = self.intern_image(format, bytes, px, None);
         self.lay_image(id, CursorAfterImage::NextLine);
+    }
+
+    /// Answer DECRQSS, `DCS $ q NAME ST`: what a setting is now, spelled as the
+    /// sequence that would set it.
+    ///
+    /// `DCS 1 $ r VALUE NAME ST` for a setting cooked has, `DCS 0 $ r ST` for one it
+    /// does not. Always answered, which is half the point: an editor asks at startup
+    /// and waits, and silence costs it its timeout.
+    ///
+    /// The settings are the ones a program can act on. The rendition is how a program
+    /// that cannot know what it inherited finds out; the cursor style is what vim and
+    /// neovim ask so as to put it back on exit; the margins are how a pane learns what
+    /// it was given. The conformance level and the page length are answered because
+    /// they are true and cost a line each.
+    fn report_setting(&mut self, name: &[u8]) {
+        let value = match name {
+            b"m" => Some(self.rendition_report()),
+            b" q" => Some(
+                match self.modes.cursor_shape {
+                    // The steady spellings: whether it blinks is not the child's; see
+                    // [`CursorShape`].
+                    CursorShape::Block => "2",
+                    CursorShape::Underline => "4",
+                    CursorShape::Bar => "6",
+                }
+                .to_owned(),
+            ),
+            b"r" => {
+                let region = self.screen().region;
+                Some(format!("{};{}", region.top + 1, region.bottom + 1))
+            }
+            // VT220, seven-bit controls: what primary DA says, said again.
+            b"\"p" => Some("62;1".to_owned()),
+            b"t" | b"*|" => Some(self.screen().height().to_string()),
+            _ => None,
+        };
+        let name = String::from_utf8_lossy(name);
+        match value {
+            Some(value) => self.dcs_reply(format_args!("1$r{value}{name}")),
+            None => self.dcs_reply(format_args!("0$r")),
+        }
+    }
+
+    /// The pen as the parameters of the SGR that would set it from nothing.
+    ///
+    /// Always led by `0`, as xterm's is: the report is a rendition to *become*, and
+    /// without the reset it would be one to add to whatever is there. Colours past the
+    /// first sixteen go out in the colon form, which no parser mistakes for more
+    /// parameters.
+    fn rendition_report(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from("0");
+        let attrs = self.pen.attrs;
+        for (flag, code) in [
+            (Attrs::BOLD, 1),
+            (Attrs::FAINT, 2),
+            (Attrs::ITALIC, 3),
+            (Attrs::BLINK, 5),
+            (Attrs::REVERSE, 7),
+            (Attrs::CONCEAL, 8),
+            (Attrs::STRIKE, 9),
+        ] {
+            if attrs.contains(flag) {
+                let _ = write!(out, ";{code}");
+            }
+        }
+        match attrs.underline_style() {
+            0 => {}
+            1 => out.push_str(";4"),
+            style => {
+                let _ = write!(out, ";4:{style}");
+            }
+        }
+        for (color, base, bright, extended) in [
+            (self.pen.fg, 30, 90, 38),
+            (self.pen.bg, 40, 100, 48),
+            (self.underline, 0, 0, 58),
+        ] {
+            let _ = match color {
+                Color::Default => Ok(()),
+                Color::Indexed(n @ 0..=7) if base != 0 => write!(out, ";{}", base + u16::from(n)),
+                Color::Indexed(n @ 8..=15) if base != 0 => {
+                    write!(out, ";{}", bright + u16::from(n - 8))
+                }
+                Color::Indexed(n) => write!(out, ";{extended}:5:{n}"),
+                Color::Rgb(r, g, b) => write!(out, ";{extended}:2::{r}:{g}:{b}"),
+            };
+        }
+        out
     }
 
     /// `ESC _ ... ST` — the kitty graphics protocol, and nothing else so far.

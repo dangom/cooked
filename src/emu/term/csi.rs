@@ -1,5 +1,9 @@
 //! `CSI` dispatch, and the mode machinery it drives.
 
+/// The body of the primary device attributes report; see the `CSI c` arm for what
+/// each number claims. One constant because DECID, `ESC Z`, is answered with it too.
+pub(super) const PRIMARY_DA: &str = "?62;4;22c";
+
 /// DECRQM's answer about a mode.
 ///
 /// The protocol's numbers, named once, so that neither reporting site spells them as a
@@ -84,7 +88,8 @@ impl State {
         match mode {
             6 => {
                 self.modes.origin_mode = on;
-                self.screen_mut().goto(0, 0);
+                // Home, which with the mode on is the top margin and not row one.
+                self.goto_addressed(0, 0);
             }
             7 => {
                 self.primary.set_autowrap(on);
@@ -132,7 +137,10 @@ impl State {
                 self.events.push(Event::Mouse(self.modes.mouse));
             }
             47 | 1047 => self.set_alt(on),
-            1048 => self.save_restore(on),
+            // The mode spelling of DECSC and DECRC, so a restore with nothing saved
+            // goes home as `ESC 8` does; see `restore_cursor`.
+            1048 if on => self.save_restore(true),
+            1048 => self.restore_cursor(),
             // Save, switch, ... switch back, restore. The save and the restore have to
             // bracket the switch rather than both precede it, because `save_restore`
             // acts on whichever screen is showing: run before `set_alt(false)` it read
@@ -237,6 +245,73 @@ impl State {
         if had_mouse {
             self.events.push(Event::Mouse(self.modes.mouse));
         }
+    }
+
+    /// Go to an addressed row and column: `CUP`, `HVP`, `VPA` and the home that
+    /// setting or resetting origin mode implies.
+    ///
+    /// With origin mode on a row is counted from the top margin and cannot leave the
+    /// scrolling region, which is the whole of what the mode is: a program that set a
+    /// region and addresses "row 1" means the first row of it.
+    fn goto_addressed(&mut self, row: usize, col: usize) {
+        let row = if self.modes.origin_mode {
+            let region = self.screen().region;
+            (row + region.top).min(region.bottom)
+        } else {
+            row
+        };
+        self.screen_mut().goto(row, col);
+    }
+
+    /// The cursor as `CPR` reports it: one-based, and counted from the top margin
+    /// under origin mode, so that the position a program reads is one it can send
+    /// straight back in a `CUP`.
+    fn reported_cursor(&self) -> (usize, usize) {
+        let Cursor { row, col, .. } = self.screen().cursor;
+        let top = if self.modes.origin_mode {
+            self.screen().region.top
+        } else {
+            0
+        };
+        (row.saturating_sub(top) + 1, col + 1)
+    }
+
+    /// DECRC as a program sends it, `ESC 8` or `CSI u`.
+    ///
+    /// With nothing saved it is not a no-op: the cursor goes home and the rendition
+    /// back to default, which is what the terminal's power-on save holds. DECSTR
+    /// empties the slot, so `ESC 7`, a soft reset, `ESC 8` lands at the top left.
+    /// Mode 1048 is the same request and comes here too. The restore that ends 1049
+    /// keeps the plain `save_restore`: there a missing save means the program never
+    /// entered, and moving the cursor on its way out would be inventing a position.
+    pub(super) fn restore_cursor(&mut self) {
+        if self.screen().saved.is_some() {
+            self.save_restore(false);
+        } else {
+            self.pen = Style::default();
+            self.underline = Color::Default;
+            self.modes.dec_graphics = false;
+            self.screen_mut().goto(0, 0);
+        }
+    }
+
+    /// DECALN, `ESC # 8`: the screen alignment pattern.
+    ///
+    /// Every cell becomes an `E` in the default rendition, the margins are reset and
+    /// the cursor goes home. It was for aligning a CRT; what uses it now is every
+    /// test of a terminal, `vttest` first among them, as the quickest way to put
+    /// something known in every cell.
+    pub(super) fn alignment_pattern(&mut self) {
+        let screen = self.screen_mut();
+        screen.reset_region();
+        let (height, width) = (screen.height(), screen.width());
+        for row in 0..height {
+            screen.goto(row, 0);
+            for _ in 0..width {
+                screen.place('E', 1, Style::default()).discard();
+            }
+        }
+        screen.goto(0, 0);
     }
 
     pub(super) fn save_restore(&mut self, save: bool) {
@@ -375,24 +450,16 @@ impl State {
                 let row = self.screen().cursor.row;
                 self.screen_mut().goto(row, params.coord(0));
             }
-            (None, 'H' | 'f') => {
-                let top = if self.modes.origin_mode {
-                    self.screen().region.top
-                } else {
-                    0
-                };
-                let (row, col) = (params.coord(0) + top, params.coord(1));
-                self.screen_mut().goto(row, col);
-            }
+            (None, 'H' | 'f') => self.goto_addressed(params.coord(0), params.coord(1)),
             (None, 'd') => {
                 let col = self.screen().cursor.col;
-                self.screen_mut().goto(params.coord(0), col);
+                self.goto_addressed(params.coord(0), col);
             }
             (None, 'g') => self.screen_mut().clear_tabs(params.arg(0, 0) == 3),
             (None, 'Z') => self.screen_mut().back_tab(params.arg(0, 1)),
             (None, 'I') => self.screen_mut().tab(params.arg(0, 1)),
             (None, 's') => self.save_restore(true),
-            (None, 'u') => self.save_restore(false),
+            (None, 'u') => self.restore_cursor(),
             _ => return false,
         }
         true
@@ -638,15 +705,58 @@ impl State {
             // 6/selective erase, not 2/printer — see the printer capabilities dropped
             // from terminfo. The 4 is load-bearing rather than decorative: it is how
             // every sixel producer in circulation decides whether to emit one at all.
-            (None, 'c') => self.csi_reply(format_args!("?62;4;22c")),
+            (None, 'c') => self.csi_reply(format_args!("{PRIMARY_DA}")),
             // Secondary DA. Unanswered, a child that queries and waits hangs.
             (Some(b'>'), 'c') => self.csi_reply(format_args!(">0;0;0c")),
             (None, 'n') if params.arg(0, 0) == 5 => {
                 self.csi_reply(format_args!("0n"));
             }
             (None, 'n') if params.arg(0, 0) == 6 => {
-                let Cursor { row, col, .. } = self.screen().cursor;
-                self.csi_reply(format_args!("{};{}R", row + 1, col + 1));
+                let (row, col) = self.reported_cursor();
+                self.csi_reply(format_args!("{row};{col}R"));
+            }
+            // DECXCPR, the same report with the private marker a program asked with.
+            (Some(b'?'), 'n') if params.arg(0, 0) == 6 => {
+                let (row, col) = self.reported_cursor();
+                self.csi_reply(format_args!("?{row};{col}R"));
+            }
+            // DECRQCRA, `CSI Pid ; Pp ; Pt ; Pl ; Pb ; Pr * y`: the checksum of a
+            // rectangle, answered `DCS Pid ! ~ XXXX ST`. Only when Emacs has asked for
+            // it; see `Term::set_checksum_reports`.
+            //
+            // The sum is the one xterm settled on in patch 334 and the one `esctest`
+            // reads with `--xterm-checksum=334`: the code points in the rectangle,
+            // added up, with an erased cell counted as the space it is drawn as and
+            // nothing added for attributes. Asked about one cell it is that cell's
+            // character, which is the only way a suite ever asks.
+            //
+            // A wide character's second cell adds nothing, and what was folded onto a
+            // cell after its first code point -- a combining mark, the rest of an
+            // emoji sequence -- is not on the grid to be added.
+            (Some(b'*'), 'y') if self.checksum_reports => {
+                let id = params.arg(0, 0);
+                let top = if self.modes.origin_mode {
+                    self.screen().region.top
+                } else {
+                    0
+                };
+                let screen = self.screen();
+                let (height, width) = (screen.height(), screen.width());
+                let first_row = (params.coord(2) + top).min(height - 1);
+                let last_row = (params.arg(4, height) - 1 + top).min(height - 1);
+                let first_col = params.coord(3).min(width - 1);
+                let last_col = (params.arg(5, width) - 1).min(width - 1);
+                let mut sum = 0u16;
+                for row in first_row..=last_row {
+                    let Some(row) = screen.row(row) else { continue };
+                    for col in first_col..=last_col {
+                        let ch = row.get(col).map_or(' ', |cell| cell.ch);
+                        if ch != '\0' {
+                            sum = sum.wrapping_add(ch as u32 as u16);
+                        }
+                    }
+                }
+                self.dcs_reply(format_args!("{id}!~{sum:04X}"));
             }
             // The colour scheme, `CSI ? 996 n`. Silent until Emacs has reported one: the
             // protocol defines dark and light and nothing else, so there is no way to say

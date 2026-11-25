@@ -80,6 +80,7 @@
 (declare-function cooked--live-p "ext:cooked-core")
 (declare-function cooked--sample-mode "ext:cooked-core")
 (declare-function cooked--set-attended "ext:cooked-core")
+(declare-function cooked--set-checksum-reports "ext:cooked-core")
 (declare-function cooked--set-tuning "ext:cooked-core")
 (declare-function cooked--kill "ext:cooked-core")
 
@@ -3109,6 +3110,18 @@ Takes effect at once, on sessions already running as well as on the next one."
   :set #'cooked--set-tuning-option
   :group 'cooked)
 
+(defcustom cooked-checksum-reports nil
+  "Whether a program may ask for a checksum of part of the screen.
+
+This is DECRQCRA, `CSI Pid ; Pp ; Pt ; Pl ; Pb ; Pr * y\='.  Asked about one
+cell, the checksum is the character in it, so it hands a program what is on
+the screen -- on its own input, as though typed.  Conformance suites read the
+screen that way and nothing else needs it, so it is off, as it is in xterm.
+
+Read when a session starts; a running one keeps what it started with."
+  :type 'boolean
+  :group 'cooked)
+
 (defcustom cooked-confirm-kill 'auto
   "Whether killing a live session asks first.
 
@@ -3260,6 +3273,9 @@ a host process is keeping.  Everything either side of that is the same."
   (cooked--sync-query-flag)
   (cooked--set-input-mark nil)
   (setq cooked--session (funcall connect))
+  ;; Only told when it is on: a session never told does not answer.
+  (when cooked-checksum-reports
+    (cooked--set-checksum-reports cooked--session t))
   ;; Once, at the start: the core answers `CSI ? 996 n' from what Emacs last reported,
   ;; and a session that outlives no theme change would otherwise answer with silence for
   ;; its whole life.  Here rather than in `cooked--start-session' so that the callers who

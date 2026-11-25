@@ -1212,6 +1212,11 @@ impl Session {
         self.shared.term.held().alt_scroll()
     }
 
+    /// Answer `DECRQCRA` or stop; see [`Term::set_checksum_reports`].
+    pub(crate) fn set_checksum_reports(&self, on: bool) {
+        self.shared.term.held().set_checksum_reports(on);
+    }
+
     /// Record Emacs' colour scheme, returning what a mode 2031 subscriber is owed.
     pub(crate) fn set_color_scheme(&self, scheme: ColorScheme) -> Option<Vec<u8>> {
         self.shared.term.held().set_color_scheme(scheme)
@@ -2792,11 +2797,16 @@ mod tests {
         let (session, _read) = session(&["/bin/sh", "-c", "sleep 300"]);
         let start = Instant::now();
         session.shutdown();
-        assert!(
-            start.elapsed() < Duration::from_millis(150),
-            "took {:?}",
-            start.elapsed()
-        );
+        // Both graces and a margin, not less. The bound was 150ms, which is
+        // `KILL_GRACE` itself, so it failed whenever the first grace ran out: a
+        // child hung up on in the instant after it is spawned does not always
+        // die of it, and shutdown then waits the grace, kills, and returns a few
+        // milliseconds past 150 -- having done exactly what it is written to do.
+        // That happened in some full runs of the suite and never when the test
+        // ran alone. Grossly slow is what this is here to catch, and
+        // that starts past the two waits shutdown is allowed.
+        let bound = KILL_GRACE * 2 + Duration::from_millis(200);
+        assert!(start.elapsed() < bound, "took {:?}", start.elapsed());
     }
 
     #[test]

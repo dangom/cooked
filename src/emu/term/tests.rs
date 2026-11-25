@@ -2138,7 +2138,9 @@ fn a_private_status_report_we_do_not_implement_is_not_answered() {
     // private DSR must stay unimplemented rather than be silently swallowed.
     let mut t = term(4, 20, b"");
     t.set_color_scheme(ColorScheme::Dark);
-    t.feed(b"\x1b[?15n\x1b[?6n");
+    // Printer status and keyboard dialect. `?6n` used to be the second example and
+    // is DECXCPR, which is answered now.
+    t.feed(b"\x1b[?15n\x1b[?26n");
     assert!(
         t.drain()
             .events
@@ -3453,4 +3455,196 @@ fn under_a_cap_the_child_is_not_held_back_for_scrollback() {
     t.set_scrollback(None, true);
     t.feed(&numbered_lines(20_000));
     assert!(t.backlog() > BACKLOG_HIGH_WATER);
+}
+
+fn replies(t: &mut Term) -> Vec<String> {
+    t.drain()
+        .events
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Reply(bytes) => Some(String::from_utf8(bytes).unwrap()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_checksum_is_not_reported_unless_emacs_asked_for_it() {
+    let mut t = term(4, 20, b"abc\x1b[1;0;1;1;1;1*y");
+    assert!(replies(&mut t).is_empty());
+}
+
+#[test]
+fn a_checksum_of_one_cell_is_its_character() {
+    let mut t = Term::new(4, 20);
+    t.set_checksum_reports(true);
+    // `b` at row 1, column 2; then an erased cell, which counts as a space.
+    t.feed(b"abc\x1b[7;0;1;2;1;2*y\x1b[8;0;3;5;3;5*y");
+    assert_eq!(
+        replies(&mut t),
+        ["\x1bP7!~0062\x1b\\", "\x1bP8!~0020\x1b\\"]
+    );
+}
+
+#[test]
+fn a_checksum_sums_a_rectangle_and_defaults_to_the_whole_screen() {
+    let mut t = Term::new(2, 3);
+    t.set_checksum_reports(true);
+    t.feed(b"ab\r\ncd\x1b[1;0;1;1;2;2*y\x1b[2*y\x1b[3;0;9;9;99;99*y");
+    let block = u32::from(b'a') + u32::from(b'b') + u32::from(b'c') + u32::from(b'd');
+    assert_eq!(
+        replies(&mut t),
+        [
+            format!("\x1bP1!~{block:04X}\x1b\\"),
+            // The third column of both rows is blank.
+            format!("\x1bP2!~{:04X}\x1b\\", block + 2 * 0x20),
+            // A rectangle off the screen is clamped to its last cell.
+            "\x1bP3!~0020\x1b\\".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_checksum_counts_a_wide_character_once_and_follows_origin_mode() {
+    let mut t = Term::new(4, 10);
+    t.set_checksum_reports(true);
+    t.feed("日".as_bytes());
+    t.feed(b"\x1b[1;0;1;1;1;2*y");
+    assert_eq!(
+        replies(&mut t),
+        [format!("\x1bP1!~{:04X}\x1b\\", '日' as u32)]
+    );
+
+    // Rows 2-4 scroll, origin mode on: row 1 of the request is screen row 2.
+    t.feed(b"\x1b[2;4r\x1b[?6h\x1b[1;1Hx\x1b[2;0;1;1;1;1*y");
+    assert_eq!(replies(&mut t), ["\x1bP2!~0078\x1b\\"]);
+}
+
+#[test]
+fn the_cursor_report_counts_from_the_top_margin_under_origin_mode() {
+    // Rows 5-10 scroll. With origin mode on, "row 1" is row 5, and the report says 1.
+    let mut t = term(24, 80, b"\x1b[5;10r\x1b[?6h\x1b[2;3H\x1b[6n\x1b[?6n");
+    assert_eq!(t.screen().cursor.row, 5);
+    assert_eq!(replies(&mut t), ["\x1b[2;3R", "\x1b[?2;3R"]);
+
+    // Off again, the same cell is reported where it is on the screen.
+    t.feed(b"\x1b[?6l\x1b[6;3H\x1b[6n");
+    assert_eq!(replies(&mut t), ["\x1b[6;3R"]);
+}
+
+#[test]
+fn origin_mode_homes_to_the_top_margin_and_keeps_addresses_inside_the_region() {
+    let mut t = term(24, 80, b"\x1b[5;10r\x1b[?6h");
+    assert_eq!((t.screen().cursor.row, t.screen().cursor.col), (4, 0));
+
+    // CUP and VPA past the bottom margin stop on it.
+    t.feed(b"\x1b[99;1H");
+    assert_eq!(t.screen().cursor.row, 9);
+    t.feed(b"\x1b[1;1H\x1b[99d");
+    assert_eq!(t.screen().cursor.row, 9);
+    // VPA counts from the top margin too.
+    t.feed(b"\x1b[2d");
+    assert_eq!(t.screen().cursor.row, 5);
+
+    // Resetting the mode homes to the real top left.
+    t.feed(b"\x1b[?6l");
+    assert_eq!((t.screen().cursor.row, t.screen().cursor.col), (0, 0));
+}
+
+#[test]
+fn restoring_a_cursor_that_was_never_saved_goes_home() {
+    let t = term(10, 20, b"\x1b[5;7H\x1b[1;31m\x1b8x");
+    assert_eq!(text(&t, 0), "x");
+    assert_eq!(t.screen().row(0).unwrap().runs()[0].style, Style::default());
+
+    // A soft reset empties the slot: save, reset, restore lands at the top left.
+    let t = term(10, 20, b"a\x1b7\x1b[!pb\x1b8c");
+    assert_eq!(text(&t, 0), "cb");
+
+    // A saved one is still restored, any number of times, to the same cell.
+    let t = term(10, 20, b"\x1b[3;4H\x1b7\x1b[9;9H\x1b8a\x1b[9;9H\x1b[ub");
+    assert_eq!(text(&t, 2), "   b");
+}
+
+#[test]
+fn leaving_the_alternate_screen_without_having_saved_leaves_the_cursor_alone() {
+    // `1049 l` with no `1049 h` before it: no save, no move.
+    let t = term(10, 20, b"\x1b[3;4H\x1b[?1049lx");
+    assert_eq!(text(&t, 2), "   x");
+
+    // 1048 is DECSC and DECRC by another name, and its restore does go home.
+    let t = term(10, 20, b"\x1b[5;6H\x1b[?1048ly");
+    assert_eq!(text(&t, 0), "y");
+    let t = term(10, 20, b"\x1b[5;6H\x1b[?1048h\x1b[H\x1b[?1048ly");
+    assert_eq!(text(&t, 4), "     y");
+}
+
+#[test]
+fn the_alignment_pattern_fills_the_screen_and_resets_the_margins() {
+    let mut t = term(3, 4, b"\x1b[1;31mab\x1b[2;3r\x1b[2;2H\x1b#8");
+    for row in 0..3 {
+        assert_eq!(text(&t, row), "EEEE");
+    }
+    assert_eq!(t.screen().row(0).unwrap().runs()[0].style, Style::default());
+    assert_eq!((t.screen().cursor.row, t.screen().cursor.col), (0, 0));
+    assert_eq!((t.screen().region.top, t.screen().region.bottom), (0, 2));
+    // Nothing went to the scrollback on the way.
+    assert!(t.drain().scrolled.is_empty());
+}
+
+#[test]
+fn identify_is_answered_as_device_attributes_are() {
+    let mut t = term(4, 20, b"\x1b[c\x1bZ");
+    assert_eq!(replies(&mut t), ["\x1b[?62;4;22c", "\x1b[?62;4;22c"]);
+}
+
+#[test]
+fn a_setting_is_reported_as_the_sequence_that_would_set_it() {
+    let mut t = term(24, 80, b"\x1b[1;4:3;31;48;5;200;58:2::1:2:3m\x1bP$qm\x1b\\");
+    assert_eq!(
+        replies(&mut t),
+        ["\x1bP1$r0;1;4:3;31;48:5:200;58:2::1:2:3m\x1b\\"]
+    );
+
+    // Fed back, the report sets the pen it described.
+    let mut again = term(
+        24,
+        80,
+        b"\x1b[0;1;4:3;31;48:5:200;58:2::1:2:3m\x1bP$qm\x1b\\",
+    );
+    assert_eq!(
+        replies(&mut again),
+        ["\x1bP1$r0;1;4:3;31;48:5:200;58:2::1:2:3m\x1b\\"]
+    );
+
+    t.feed(b"\x1b[0m\x1b[4 q\x1b[5;6r\x1bP$q q\x1b\\\x1bP$qr\x1b\\\x1bP$qm\x1b\\\x1bP$q\"p\x1b\\");
+    assert_eq!(
+        replies(&mut t),
+        [
+            "\x1bP1$r4 q\x1b\\",
+            "\x1bP1$r5;6r\x1b\\",
+            "\x1bP1$r0m\x1b\\",
+            "\x1bP1$r62;1\"p\x1b\\"
+        ]
+    );
+}
+
+#[test]
+fn a_setting_cooked_does_not_have_is_answered_as_unknown_rather_than_not_at_all() {
+    // Left and right margins, character protection, a name too long to be one, and
+    // an empty one.
+    let mut t = term(
+        24,
+        80,
+        b"\x1bP$qs\x1b\\\x1bP$q\"q\x1b\\\x1bP$qmmmmmm\x1b\\\x1bP$q\x1b\\",
+    );
+    assert_eq!(replies(&mut t), ["\x1bP0$r\x1b\\"; 4]);
+}
+
+#[test]
+fn a_status_request_is_not_taken_for_a_sixel() {
+    let mut t = term(4, 20, b"\x1bP$qm\x1b\\");
+    let delta = t.drain();
+    assert!(delta.images.is_empty());
+    assert_eq!(text(&t, 0), "");
 }

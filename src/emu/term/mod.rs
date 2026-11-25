@@ -679,6 +679,18 @@ impl Term {
         self.state.metrics
     }
 
+    /// Answer `DECRQCRA`, the checksum of a rectangle of the screen, or stop answering.
+    ///
+    /// Off unless Emacs turns it on, and on [`State`] rather than [`Modes`] so that no
+    /// reset the child sends can change it. The report is the screen read back on the
+    /// child's input: one cell at a time it is the character in that cell, which is
+    /// exactly what a conformance suite wants it for and exactly what a program
+    /// printing into somebody else's terminal should not be handed. xterm keeps it
+    /// behind a resource for the same reason.
+    pub fn set_checksum_reports(&mut self, on: bool) {
+        self.state.checksum_reports = on;
+    }
+
     /// Tell the emulator whether Emacs renders light or dark, returning what a subscriber
     /// to mode 2031 is now owed.
     ///
@@ -1027,6 +1039,9 @@ struct State {
     /// is running, and only `q` is ours. Collected rather than decoded incrementally
     /// because a sixel's size is not known until its last band -- see [`sixel::decode`].
     sixel: Option<Vec<u8>>,
+    /// The setting a running `DCS $ q` asks about -- DECRQSS -- while its string is
+    /// open. A handful of bytes: no setting's name is longer than two.
+    status_request: Option<Vec<u8>>,
     /// The cell size Emacs reports, for turning pixels into a cell rectangle.
     metrics: CellMetrics,
     /// The light/dark scheme Emacs reports, for answering `CSI ? 996 n`.
@@ -1040,6 +1055,8 @@ struct State {
     /// On [`State`] rather than [`Modes`] for the same reason `metrics` is: it is not
     /// something the child negotiated, so a soft reset must not clear it.
     color_scheme: Option<ColorScheme>,
+    /// Whether `DECRQCRA` is answered; see [`Term::set_checksum_reports`].
+    checksum_reports: bool,
     /// Rows that have ever left the top of the primary screen. Screen row 0 is this row,
     /// counting from the beginning of the session, which is what makes an [`Anchor`]
     /// outlive the grid position it was taken from.

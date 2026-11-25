@@ -2156,15 +2156,22 @@ no drain at all then, which
   (require 'cooked-evil)
   (evil-mode 1)
   (let ((cooked-evil-visual-state-render 'still))
-    (cooked-tests--with-session '("/bin/sh" "-c" "printf 'alpha\\n'; exec cat")
+    ;; The child rewrites the row that is selected.  Output alone no longer costs a
+    ;; selection -- one whose text a redraw leaves as it was is kept, see
+    ;; `cooked--clear-stale-mark' -- so the text under it has to change.
+    (cooked-tests--with-session
+        '("/bin/sh" "-c" "printf 'alpha'; read x; printf '\\033[A\\r\\033[2Kbravo\\n'; exec cat")
       (should (cooked-tests--settle
                (lambda () (string-match-p "alpha" (cooked-tests--text)))))
-      (goto-char (point-max))
+      (goto-char (point-min))
+      (search-forward "alpha")
+      (goto-char (match-beginning 0))
       (evil-visual-state)
+      (goto-char (1- (match-end 0)))
       (should (evil-visual-state-p))
       (should mark-active)
       (should-not (cooked--frozen-p))
-      (cooked--send cooked--session "bravo\n")
+      (cooked--send cooked--session "\n")
       (should (cooked-tests--settle
                (lambda () (string-match-p "bravo" (cooked-tests--text)))))
       (should-not mark-active)
