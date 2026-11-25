@@ -149,6 +149,13 @@ Everything since the fork from upstream at `dd8e9fc` (2026-09-06).
 
 ### Fixed
 
+- A saved session is restored from a buffer whose directory is gone.  The host
+  program was run in the current buffer's directory, and where that had been
+  removed or renamed no process started: `cooked-host-restore` and the
+  `persp-mode` and `desktop` handlers then brought nothing back, and said
+  nothing.  It is now run where a directory surely is; it is told every
+  directory it needs.
+
 - A long line typed to a program with `cooked-program-line-editor` at `emacs`
   pushed the rows under it, the rest of the program's input box and its status
   line, out of the bottom of the window as it wrapped, until the program next

@@ -137,11 +137,21 @@ holding the output is made current: where they are buffer-local -- envrc
 makes them so in a direnv project -- that buffer would see only the global
 ones, and a session started from such a buffer was given Emacs's global
 environment rather than the project's, without the terminal settings
-`cooked-host-start' binds."
+`cooked-host-start' binds.
+
+Run where a directory surely is.  The program is told every directory it
+needs, so where it runs is nothing to it; but it is run from whatever buffer
+is current, whose directory may be gone -- a project removed or renamed
+under it -- and no process starts there: a saved session was then not
+restored, and nothing said why."
   (let ((environment process-environment)
-        (path exec-path))
+        (path exec-path)
+        (somewhere (if (file-directory-p default-directory)
+                       default-directory
+                     temporary-file-directory)))
     (with-temp-buffer
-      (let* ((exec-path path)
+      (let* ((default-directory somewhere)
+             (exec-path path)
              (process-environment
               (cons (concat "COOKED_HOST_DIR=" (directory-file-name (cooked-host-sessions-directory)))
                     environment))
